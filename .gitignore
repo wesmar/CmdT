@@ -1,0 +1,40 @@
+# Pliki środowiskowe
+.env
+.env.*
+
+# Release files (archiwum)
+*.7z
+*.zip
+*.dat
+*.tar.gz
+
+# Build artifacts (tymczasowe)
+bin/
+obj/
+build/
+dist/
+*.obj
+*.res
+*.pdb
+
+# Ignoruj binaries TYLKO w katalogu głównym (nie w data/)
+/*.exe
+/*.dll
+
+# Windows system files
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+struktura.txt

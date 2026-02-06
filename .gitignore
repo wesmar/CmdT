@@ -1,40 +1,27 @@
+# Skrypty lokalne
+git-push.sh
+pack-release.sh
+pack-data.sh
+release-update.sh
+
 # Pliki środowiskowe
 .env
 .env.*
 
-# Release files (archiwum)
+# Release files
+releases/
 *.7z
 *.zip
 *.dat
 *.tar.gz
 
-# Build artifacts (tymczasowe)
+# Binarki i build
 bin/
 obj/
 build/
 dist/
-*.obj
-*.res
-*.pdb
+*.exe
+*.dll
 
-# Ignoruj binaries TYLKO w katalogu głównym (nie w data/)
-/*.exe
-/*.dll
-
-# Windows system files
-Thumbs.db
-Desktop.ini
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Logs
-*.log
-
-# Temporary files
-tmp/
-temp/
-struktura.txt
+# Katalogi z danymi
+data/

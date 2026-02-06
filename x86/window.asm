@@ -35,6 +35,7 @@ include globals.inc             ; Global variable declarations
 ; Application-specific functions
 RunAsTrustedInstaller   PROTO :DWORD,:DWORD
 ResolveLnkPath          PROTO :DWORD,:DWORD,:DWORD
+FixRegeditPath          PROTO :DWORD
 
 ; Windows User32 API - Window management
 RegisterClassW          PROTO :DWORD
@@ -133,7 +134,10 @@ str_AboutTitle  dw 'A','b','o','u','t',0
 str_AboutText   dw 'C','M','D','T',' ',' ','v','1','.','0','.','0','.','0',10,10
                 dw 'A','u','t','h','o','r',':',' ',' ','M','a','r','e','k',' ','W','e','s','o',0142h,'o','w','s','k','i',10
                 dw 'h','t','t','p','s',':','/','/','k','v','c','.','p','l',10
-                dw 'm','a','r','e','k','@','k','v','c','.','p','l',0
+                dw 'm','a','r','e','k','@','k','v','c','.','p','l',10,10
+                dw 'C','L','I',':',10
+                dw 'c','m','d','t','.','e','x','e',' ','-','c','l','i',' ','<','c','o','m','m','a','n','d','>',10
+                dw 'c','m','d','t','.','e','x','e',' ','-','c','l','i',' ','-','n','e','w',' ','<','c','o','m','m','a','n','d','>',0
 
 ; File dialog filter string (double-null terminated)
 str_Filter      dw 'E','x','e','c','u','t','a','b','l','e','s',0,'*','.','e','x','e',';','*','.','l','n','k',0,'A','l','l',' ','F','i','l','e','s',0,'*','.','*',0,0
@@ -212,7 +216,8 @@ RunCommand proc hWnd:DWORD
 
     ; Execute command with TrustedInstaller privileges
     ; Parameter 1: new console window
-    invoke RunAsTrustedInstaller, offset g_cmdBuf, 1
+    invoke FixRegeditPath, offset g_cmdBuf
+    invoke RunAsTrustedInstaller, eax, 1
     test eax, eax
     jz rc_fail                              ; Execution failed
 

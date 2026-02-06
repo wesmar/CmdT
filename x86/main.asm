@@ -51,7 +51,6 @@ GetCommandLineW         PROTO
 CommandLineToArgvW      PROTO :DWORD,:DWORD
 LocalFree               PROTO :DWORD
 SetFocus                PROTO :DWORD
-WideCharToMultiByte     PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 
 ; ==============================================================================
 ; CONSTANT STRING DATA
@@ -72,6 +71,11 @@ str_newSwitch   dw '-','n','e','w',0
 ; File extension strings
 str_extLnk_m    dw '.','l','n','k',0      ; Windows shortcut extension
 str_space       dw ' ',0                   ; Space character for string building
+
+; CLI fallback for regedit on WOW64-only systems
+str_regedit     dw 'r','e','g','e','d','i','t',0
+str_regedit_exe dw 'r','e','g','e','d','i','t','.','e','x','e',0
+str_regedit_path dw 'C',':','\','W','i','n','d','o','w','s','\','S','y','s','W','O','W','6','4','\','r','e','g','e','d','i','t','.','e','x','e',0
 
 ; ==============================================================================
 ; PRIVILEGE STRING DEFINITIONS
@@ -138,6 +142,7 @@ g_privTable dd offset privStr_0,offset privStr_1,offset privStr_2,offset privStr
 ; Global variables exported for use in other modules
 PUBLIC g_cachedToken, g_tokenTime, g_hwndMain, g_hwndEdit, g_hwndBtn, g_hwndStatus, g_hConsoleOut, g_hInstance
 PUBLIC privPrefix, privSuffix
+PUBLIC FixRegeditPath
 
 g_cachedToken   dd 0                        ; Cached TrustedInstaller token handle
 g_tokenTime     dd 0                        ; Timestamp of cached token (for expiration)
@@ -296,62 +301,6 @@ not_eq:
 wcscmp_ci endp
 
 ; ==============================================================================
-; strcmp_ci - ANSI String Compare (Case-Insensitive)
-;
-; Purpose: Compares two ANSI (single-byte) strings ignoring case differences.
-;          Similar to wcscmp_ci but for 8-bit characters.
-;
-; Parameters:
-;   str1 - First ANSI string pointer
-;   str2 - Second ANSI string pointer
-;
-; Returns:
-;   EAX = 1 if strings match (case-insensitive), 0 if different
-;
-; Registers modified: EAX, EDX, ESI, EDI
-; ==============================================================================
-strcmp_ci proc str1:DWORD, str2:DWORD
-    push esi                                ; Preserve registers
-    push edi
-    mov esi, str1                           ; ESI = first string
-    mov edi, str2                           ; EDI = second string
-sci_loop:
-    mov al, byte ptr [esi]                  ; Read single bytes (ANSI)
-    mov dl, byte ptr [edi]
-    ; Convert first character to lowercase if uppercase
-    cmp al, 'A'
-    jb sci_skip1
-    cmp al, 'Z'
-    ja sci_skip1
-    add al, 32                              ; A-Z → a-z conversion
-sci_skip1:
-    ; Convert second character to lowercase if uppercase
-    cmp dl, 'A'
-    jb sci_skip2
-    cmp dl, 'Z'
-    ja sci_skip2
-    add dl, 32
-sci_skip2:
-    cmp al, dl                              ; Compare normalized characters
-    jne not_eq_s                            ; Different
-    test al, al                             ; Check for null terminator
-    jz equal_s                              ; Both strings ended, match
-    inc esi                                 ; Move to next byte
-    inc edi
-    jmp sci_loop
-equal_s:
-    pop edi
-    pop esi
-    mov eax, 1                              ; Return 1 (match)
-    ret
-not_eq_s:
-    pop edi
-    pop esi
-    xor eax, eax                            ; Return 0 (differ)
-    ret
-strcmp_ci endp
-
-; ==============================================================================
 ; skip_spaces - Skip Leading Whitespace
 ;
 ; Purpose: Advances pointer past any leading space characters (U+0020) in a
@@ -404,26 +353,133 @@ wcslen_p proc lpStr:DWORD
 wcslen_p endp
 
 ; ==============================================================================
-; wcstombs_p - Wide Character to Multibyte String Conversion
+; FixRegeditPath - WOW64-safe regedit fallback
 ;
-; Purpose: Converts a wide character (UTF-16) string to a multibyte (ANSI/UTF-8)
-;          string using Windows API.
+; Purpose: On some systems, System32\regedit.exe is missing and only the
+;          SysWOW64 version exists. If the command token is "regedit" or
+;          "regedit.exe" without a path, rewrite the command to use:
+;          C:\Windows\SysWOW64\regedit.exe
 ;
 ; Parameters:
-;   wstr   - Source wide character string pointer
-;   mbstr  - Destination multibyte buffer pointer
-;   maxlen - Maximum length of destination buffer
+;   lpCmd - Pointer to command line string
 ;
 ; Returns:
-;   EAX = Number of bytes written (from WideCharToMultiByte)
+;   EAX = Pointer to command string to execute (original or g_cmdBuf)
 ;
-; Registers modified: EAX (API return value)
+; Registers modified: EAX, EBX, ECX, EDX, ESI, EDI
 ; ==============================================================================
-wcstombs_p proc wstr:DWORD, mbstr:DWORD, maxlen:DWORD
-    ; Call WideCharToMultiByte with code page 0 (CP_ACP), no flags
-    invoke WideCharToMultiByte, 0, 0, wstr, -1, mbstr, maxlen, 0, 0
+FixRegeditPath proc lpCmd:DWORD
+    LOCAL endCh:WORD
+    LOCAL endPtr:DWORD
+    LOCAL afterPtr:DWORD
+    LOCAL quoted:DWORD
+    LOCAL hasPath:DWORD
+
+    mov esi, lpCmd
+    mov eax, esi
+    test eax, eax
+    jz frp_return_orig
+
+    ; Skip leading spaces
+    invoke skip_spaces, esi
+    mov esi, eax
+
+    mov quoted, 0
+    mov hasPath, 0
+
+    ; Check for leading quote
+    cmp word ptr [esi], '"'
+    jne frp_token_start
+    mov quoted, 1
+    add esi, 2
+
+frp_token_start:
+    mov edi, esi                            ; Token start
+frp_scan:
+    mov ax, word ptr [edi]
+    test ax, ax
+    jz frp_token_end
+    cmp ax, '"'
+    jne @F
+    cmp quoted, 0
+    je @F
+    jmp frp_token_end                       ; Closing quote ends token
+@@:
+    cmp ax, ' '
+    jne @F
+    cmp quoted, 0
+    jne @F                                  ; Space inside quotes
+    jmp frp_token_end
+@@:
+    cmp ax, '\'
+    je frp_mark_path
+    cmp ax, ':'
+    jne frp_advance
+frp_mark_path:
+    mov hasPath, 1
+frp_advance:
+    add edi, 2
+    jmp frp_scan
+
+frp_token_end:
+    mov endPtr, edi
+    mov eax, edi
+    mov afterPtr, eax
+    ; If quoted and we stopped at quote, skip it
+    cmp quoted, 0
+    je @F
+    cmp word ptr [edi], '"'
+    jne @F
+    add afterPtr, 2
+@@:
+    ; If token contains a path, do not rewrite
+    cmp hasPath, 0
+    jne frp_return_orig
+
+    ; Temporarily null-terminate token for comparison
+    mov ax, word ptr [edi]
+    mov endCh, ax
+    mov word ptr [edi], 0
+
+    push offset str_regedit
+    push esi
+    call wcscmp_ci
+    test eax, eax
+    jnz frp_match
+    push offset str_regedit_exe
+    push esi
+    call wcscmp_ci
+    test eax, eax
+    jz frp_restore_return
+
+frp_match:
+    ; Restore original character
+    mov ax, endCh
+    mov word ptr [edi], ax
+
+    ; Skip spaces after token and copy rest to temp
+    invoke skip_spaces, afterPtr
+    invoke wcscpy_p, offset g_tempBuf, eax
+
+    ; Build new command in g_cmdBuf
+    invoke wcscpy_p, offset g_cmdBuf, offset str_regedit_path
+    invoke wcslen_p, offset g_tempBuf
+    test eax, eax
+    jz frp_return_buf
+    invoke wcscat_p, offset g_cmdBuf, offset str_space
+    invoke wcscat_p, offset g_cmdBuf, offset g_tempBuf
+
+frp_return_buf:
+    mov eax, offset g_cmdBuf
     ret
-wcstombs_p endp
+
+frp_restore_return:
+    mov ax, endCh
+    mov word ptr [edi], ax
+frp_return_orig:
+    mov eax, lpCmd
+    ret
+FixRegeditPath endp
 
 ; ==============================================================================
 ; start - Main Entry Point
@@ -633,7 +689,8 @@ find_space_or_quote:
     jne @F
     test edx, edx                           ; Inside quotes?
     jnz @F                                  ; Yes, ignore this space
-    mov ebx, edi                            ; Save space position
+    mov ebx, edi                            ; Save first space position
+    jmp check_lnk_ext                        ; Stop at first space
 @@:
     add edi, 2
     jmp find_space_or_quote
@@ -810,12 +867,14 @@ use_lnk_args_only:
     
 run_resolved:
     ; Execute resolved .lnk target with all arguments
-    invoke RunAsTrustedInstaller, offset g_cmdBuf, g_useNewConsole
+    invoke FixRegeditPath, offset g_cmdBuf
+    invoke RunAsTrustedInstaller, eax, g_useNewConsole
     jmp run_check_result
     
 run_no_lnk:
     ; Not a .lnk file - execute command directly as entered
-    invoke RunAsTrustedInstaller, esi, g_useNewConsole
+    invoke FixRegeditPath, esi
+    invoke RunAsTrustedInstaller, eax, g_useNewConsole
     
 run_check_result:
     test eax, eax

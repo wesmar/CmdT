@@ -579,7 +579,8 @@ find_space_or_quote:
     jne @F
     test r9d, r9d               ; Inside quotes?
     jnz @F                      ; Yes: ignore space
-    mov rbx, rdi                ; No: mark space position
+    mov rbx, rdi                ; No: mark first space position
+    jmp check_lnk_ext            ; Stop at first space
 @@:
     add rdi, 2
     jmp find_space_or_quote

@@ -1,5 +1,7 @@
 # CMDT - Run as TrustedInstaller
 
+![Tetris Gameplay](images/cmdt.gif)
+
 **The smallest fully functional TrustedInstaller elevation tool for Windows, written entirely in bare-metal x86/x64 assembly.**
 
 CMDT launches any process under the **NT SERVICE\TrustedInstaller** security context — the highest privilege level in Windows, above both Administrator and SYSTEM. It enables all 34 Windows security privileges in the spawned process token, giving unrestricted access to every protected resource on the system.

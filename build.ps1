@@ -48,7 +48,7 @@ if ($LASTEXITCODE -ne 0) {
         }
     }
     if ($BuildSuccess) {
-        $linkArgs = @("x86\main.obj", "x86\token.obj", "x86\process.obj", "x86\window.obj", "cmdt_x86.res", "/subsystem:windows", "/entry:start", "/out:bin\cmdt_x86.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH32_UM", "/LIBPATH:$LIBPATH32_UCRT") + $LIBS
+        $linkArgs = @("x86\main.obj", "x86\token.obj", "x86\process.obj", "x86\window.obj", "cmdt_x86.res", "/subsystem:windows", "/entry:start@0", "/out:bin\cmdt_x86.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH32_UM", "/LIBPATH:$LIBPATH32_UCRT") + $LIBS
         & $LINK32 $linkArgs
         if ($LASTEXITCODE -ne 0) { 
             $BuildSuccess = $false 

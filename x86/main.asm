@@ -51,6 +51,16 @@ GetCommandLineW         PROTO
 CommandLineToArgvW      PROTO :DWORD,:DWORD
 LocalFree               PROTO :DWORD
 SetFocus                PROTO :DWORD
+IsUserAnAdmin           PROTO
+ShellExecuteExW         PROTO :DWORD
+GetModuleFileNameW      PROTO :DWORD,:DWORD,:DWORD
+RegCreateKeyExW         PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+RegSetValueExW          PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+RegDeleteKeyW           PROTO :DWORD,:DWORD
+RegCloseKey             PROTO :DWORD
+AttachConsole           PROTO :DWORD
+GetStdHandle            PROTO :DWORD
+WriteConsoleW           PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 
 ; ==============================================================================
 ; CONSTANT STRING DATA
@@ -76,6 +86,62 @@ str_space       dw ' ',0                   ; Space character for string building
 str_regedit     dw 'r','e','g','e','d','i','t',0
 str_regedit_exe dw 'r','e','g','e','d','i','t','.','e','x','e',0
 str_regedit_path dw 'C',':','\','W','i','n','d','o','w','s','\','S','y','s','W','O','W','6','4','\','r','e','g','e','d','i','t','.','e','x','e',0
+
+; UAC self-elevation verb
+str_runas           dw 'r','u','n','a','s',0
+
+; Context menu registration switches
+str_installSwitch   dw '-','i','n','s','t','a','l','l',0
+str_uninstallSwitch dw '-','u','n','i','n','s','t','a','l','l',0
+
+; Registry paths for Explorer context menu - Directory entries
+str_ctxKeyBg        dw 'D','i','r','e','c','t','o','r','y','\','B','a','c','k','g','r','o','u','n','d','\','s','h','e','l','l','\','C','M','D','T',0
+str_ctxKeyCmdBg     dw 'D','i','r','e','c','t','o','r','y','\','B','a','c','k','g','r','o','u','n','d','\','s','h','e','l','l','\','C','M','D','T','\','c','o','m','m','a','n','d',0
+str_ctxKeyDir       dw 'D','i','r','e','c','t','o','r','y','\','s','h','e','l','l','\','C','M','D','T',0
+str_ctxKeyCmdDir    dw 'D','i','r','e','c','t','o','r','y','\','s','h','e','l','l','\','C','M','D','T','\','c','o','m','m','a','n','d',0
+
+; Registry paths for Explorer context menu - Executable file entries
+str_ctxKeyExe       dw 'e','x','e','f','i','l','e','\','s','h','e','l','l','\','C','M','D','T',0
+str_ctxKeyCmdExe    dw 'e','x','e','f','i','l','e','\','s','h','e','l','l','\','C','M','D','T','\','c','o','m','m','a','n','d',0
+
+; Registry paths for Explorer context menu - Shortcut file entries
+str_ctxKeyLnk       dw 'l','n','k','f','i','l','e','\','s','h','e','l','l','\','C','M','D','T',0
+str_ctxKeyCmdLnk    dw 'l','n','k','f','i','l','e','\','s','h','e','l','l','\','C','M','D','T','\','c','o','m','m','a','n','d',0
+
+; Context menu display text - Directory context menus
+str_ctxTextDir      dw 'O','p','e','n',' ','C','M','D',' ','a','s',' ','T','r','u','s','t','e','d','I','n','s','t','a','l','l','e','r',0
+
+; Context menu display text - File context menus (executables and shortcuts)
+str_ctxTextFile     dw 'R','u','n',' ','a','s',' ','T','r','u','s','t','e','d','I','n','s','t','a','l','l','e','r',0
+
+; Registry value names and icon paths
+str_iconVal         dw 'I','c','o','n',0
+str_iconPath        dw 's','h','e','l','l','3','2','.','d','l','l',',','1','0','4',0
+
+; Command template components
+str_cmdQuote        dw '"',0
+str_cmdSuffixDir    dw '"',' ','-','c','l','i',' ','-','n','e','w',' ','c','m','d','.','e','x','e',' ','/','k',' ','c','d',' ','/','d',' ','"','%','V','"',0
+str_cmdSuffixFile   dw '"',' ','"','%','1','"',0
+
+; Usage help text displayed when an unknown switch is given
+str_usage       dw 13,10
+                dw 'U','s','a','g','e',':',' ','c','m','d','t','.','e','x','e',' ','[','o','p','t','i','o','n',']',13,10
+                dw 13,10
+                dw ' ',' ','-','c','l','i',' ','<','c','m','d','>'
+                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
+                dw 'R','u','n',' ','c','o','m','m','a','n','d',13,10
+                dw ' ',' ','-','c','l','i',' ','-','n','e','w',' ','<','c','m','d','>'
+                dw ' ',' ',' ',' ',' '
+                dw 'R','u','n',' ','i','n',' ','n','e','w',' ','c','o','n','s','o','l','e',13,10
+                dw ' ',' ','-','i','n','s','t','a','l','l'
+                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
+                dw 'A','d','d',' ','c','o','n','t','e','x','t',' ','m','e','n','u',13,10
+                dw ' ',' ','-','u','n','i','n','s','t','a','l','l'
+                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
+                dw 'R','e','m','o','v','e',' ','c','o','n','t','e','x','t',' ','m','e','n','u',13,10
+                dw 13,10
+                dw ' ',' ','N','o',' ','a','r','g','s',' ','t','o',' ','s','t','a','r','t',' ','G','U','I','.',13,10
+                dw 0
 
 ; ==============================================================================
 ; PRIVILEGE STRING DEFINITIONS
@@ -166,6 +232,7 @@ g_statusBuf     dw 520 dup(?)               ; Status message buffer (1040 bytes)
 g_filePath      dw 520 dup(?)               ; File path buffer (1040 bytes)
 g_argsBuf       dw 520 dup(?)               ; Arguments buffer (1040 bytes)
 g_tempBuf       dw 1040 dup(?)              ; Temporary work buffer (2080 bytes)
+g_exePath       dw 260 dup(?)               ; Exe path buffer (UAC and context menu)
 
 ; ==============================================================================
 ; CODE SECTION
@@ -267,7 +334,7 @@ wcscmp_ci proc str1:DWORD, str2:DWORD
 wci_loop:
     mov ax, word ptr [esi]                  ; Read characters from both strings
     mov dx, word ptr [edi]
-    ; Convert first character to lowercase if uppercase (A-Z → a-z)
+    ; Convert first character to lowercase if uppercase (A-Z â†’ a-z)
     cmp ax, 'A'
     jb wci_skip1                            ; Below 'A', no conversion needed
     cmp ax, 'Z'
@@ -521,9 +588,65 @@ start proc
     LOCAL argc:DWORD                        ; Argument count
     LOCAL msg:MSG                           ; Message structure for message loop
     LOCAL argv1:DWORD                       ; First argument pointer
-    
+    LOCAL sei[60]:BYTE                      ; SHELLEXECUTEINFOW for UAC elevation
+
     cld                                     ; Clear direction flag (forward string ops)
-    
+
+    ; Check if running as administrator
+    invoke IsUserAnAdmin
+    test eax, eax
+    jnz uac_already_admin
+
+    ; Not admin - relaunch with UAC elevation prompt
+    invoke GetModuleFileNameW, 0, offset g_exePath, 260
+
+    ; Extract arguments from command line (skip exe path)
+    invoke GetCommandLineW
+    mov esi, eax
+    xor edi, edi
+uac_skip_exe:
+    mov ax, word ptr [esi]
+    test ax, ax
+    jz uac_no_args
+    cmp ax, '"'
+    jne @F
+    xor edi, 1
+@@:
+    cmp ax, ' '
+    jne @F
+    test edi, edi
+    jnz @F
+    invoke skip_spaces, esi
+    mov ebx, eax
+    jmp uac_launch
+@@:
+    add esi, 2
+    jmp uac_skip_exe
+
+uac_no_args:
+    mov ebx, esi                ; Points to null terminator (empty args)
+
+uac_launch:
+    ; Zero SHELLEXECUTEINFOW (60 bytes)
+    lea edi, sei
+    xor eax, eax
+    mov ecx, 15
+    rep stosd
+
+    ; Fill SHELLEXECUTEINFOW fields
+    lea edi, sei
+    mov dword ptr [edi], 60                     ; cbSize
+    mov dword ptr [edi+12], offset str_runas    ; lpVerb
+    mov dword ptr [edi+16], offset g_exePath    ; lpFile
+    mov dword ptr [edi+20], ebx                 ; lpParameters
+    mov dword ptr [edi+28], SW_SHOWNORMAL       ; nShow
+
+    invoke ShellExecuteExW, edi
+
+    ; Exit - elevated instance takes over, or user cancelled UAC
+    invoke ExitProcess, 0
+
+uac_already_admin:
     ; Get command line and parse into arguments
     invoke GetCommandLineW                  ; Returns pointer to command line
     mov ecx, eax
@@ -532,7 +655,7 @@ start proc
     
     ; Check argument count: need at least 2 for CLI mode (exe + switch)
     cmp argc, 2
-    jl mode_gui_free                        ; Less than 2 args → GUI mode
+    jl mode_gui_free                        ; Less than 2 args â†’ GUI mode
     
     ; Retrieve argv[1] (first argument after executable name)
     mov esi, pArgv
@@ -560,7 +683,142 @@ start proc
     test eax, eax
     jnz mode_cli_found                      ; Match found
 
-    jmp mode_gui_free                       ; No CLI switch found → GUI mode
+    ; Check if argv[1] matches "-install"
+    invoke wcscmp_ci, argv1, offset str_installSwitch
+    test eax, eax
+    jnz mode_install_found
+
+    ; Check if argv[1] matches "-uninstall"
+    invoke wcscmp_ci, argv1, offset str_uninstallSwitch
+    test eax, eax
+    jnz mode_uninstall_found
+
+    ; No recognized switch: check if argv[1] starts with '-'
+    mov eax, argv1
+    cmp word ptr [eax], '-'
+    je show_usage               ; Unknown switch, display available options
+    jmp mode_file_run           ; Not a switch, treat as file path
+
+mode_file_run:
+    ; ===== Direct File Execution Mode =====
+    ; This mode is triggered when the user right-clicks on a file (.exe or .lnk)
+    ; and selects "Run as TrustedInstaller" from the context menu.
+    ; 
+    ; The context menu passes: cmdt.exe "%1"
+    ; where %1 is the full path to the clicked file.
+    ;
+    ; Since argv[1] is not a recognized switch (-cli, -install, etc.),
+    ; we treat it as a file path and execute it directly with TrustedInstaller
+    ; privileges without showing the GUI.
+    ;
+    ; Process flow:
+    ;   1. Free the argv array (no longer needed)
+    ;   2. Get the raw command line
+    ;   3. Skip past the executable path to find the file argument
+    ;   4. Execute the file with RunAsTrustedInstaller
+    ;   5. Exit immediately (no GUI)
+    
+    invoke LocalFree, pArgv                 ; Free argv array
+    
+    ; Get the raw command line to extract the file path
+    invoke GetCommandLineW
+    mov esi, eax                            ; ESI = command line pointer
+    xor edi, edi                            ; EDI = quote state flag
+    
+    ; Skip past the executable path (which may be quoted)
+skip_exe_for_file:
+    mov ax, word ptr [esi]                  ; Read current character
+    test ax, ax                             ; Check for end of string
+    jz mode_gui                             ; No file argument found, show GUI
+    cmp ax, '"'                             ; Quote character?
+    jne @F
+    xor edi, 1                              ; Toggle quote state
+@@:
+    cmp ax, ' '                             ; Space character?
+    jne @F
+    test edi, edi                           ; Inside quotes?
+    jnz @F                                  ; Yes, continue scanning
+    add esi, 2                              ; No, space ends executable path
+    invoke skip_spaces, esi                 ; Skip whitespace after exe
+    mov esi, eax
+    jmp run_file_direct                     ; ESI now points to file path
+@@:
+    add esi, 2                              ; Move to next character
+    jmp skip_exe_for_file
+
+run_file_direct:
+    ; ESI points to the file path argument (may be quoted from context menu)
+    ; Check for .lnk shortcut and resolve before execution
+
+    ; Copy path to g_filePath, stripping surrounding quotes
+    mov edx, esi
+    cmp word ptr [edx], '"'
+    jne @F
+    add edx, 2                              ; Skip leading quote
+@@:
+    invoke wcscpy_p, offset g_filePath, edx
+
+    ; Remove trailing quote if present
+    invoke wcslen_p, offset g_filePath
+    test eax, eax
+    jz run_file_exec
+    mov edx, offset g_filePath
+    cmp word ptr [edx + eax*2 - 2], '"'
+    jne @F
+    mov word ptr [edx + eax*2 - 2], 0      ; Strip trailing quote
+    dec eax
+@@:
+    ; Need at least 4 characters for .lnk extension
+    cmp eax, 4
+    jl run_file_exec
+
+    ; Check if last 4 characters match ".lnk"
+    mov edx, offset g_filePath
+    lea ecx, [edx + eax*2 - 8]
+    invoke wcscmp_ci, ecx, offset str_extLnk_m
+    test eax, eax
+    jz run_file_exec                        ; Not .lnk, execute directly
+
+    ; Clear temporary buffer for shortcut arguments
+    push edi
+    mov edi, offset g_tempBuf
+    xor eax, eax
+    mov ecx, 260
+    rep stosd
+    pop edi
+
+    ; Resolve .lnk target path and embedded arguments
+    invoke ResolveLnkPath, offset g_filePath, offset g_cmdBuf, offset g_tempBuf
+    test eax, eax
+    jz run_file_exec                        ; Resolution failed, try direct
+
+    ; Build command line from resolved target and arguments
+    invoke wcslen_p, offset g_cmdBuf
+    test eax, eax
+    jz run_file_lnk_args
+
+    invoke wcslen_p, offset g_tempBuf
+    test eax, eax
+    jz run_file_lnk_cmd                     ; No embedded args, run target only
+
+    invoke wcscat_p, offset g_cmdBuf, offset str_space
+    invoke wcscat_p, offset g_cmdBuf, offset g_tempBuf
+    jmp run_file_lnk_cmd
+
+run_file_lnk_args:
+    ; No target path, use embedded arguments only
+    invoke wcscpy_p, offset g_cmdBuf, offset g_tempBuf
+
+run_file_lnk_cmd:
+    invoke FixRegeditPath, offset g_cmdBuf
+    invoke RunAsTrustedInstaller, eax, 0
+    invoke ExitProcess, 0
+
+run_file_exec:
+    ; Not a .lnk file or resolution failed, execute as-is
+    invoke FixRegeditPath, esi
+    invoke RunAsTrustedInstaller, eax, 0
+    invoke ExitProcess, 0
 
 mode_cli_found:
     ; CLI mode detected, need at least 3 args (exe, switch, command)
@@ -587,6 +845,37 @@ cli_free_and_setup:
     invoke LocalFree, pArgv                 ; Free argv array
     jmp mode_cli_setup                      ; Continue to CLI processing
     
+mode_install_found:
+    invoke LocalFree, pArgv
+    call InstallContextMenu
+    invoke ExitProcess, 0
+
+mode_uninstall_found:
+    invoke LocalFree, pArgv
+    call UninstallContextMenu
+    invoke ExitProcess, 0
+
+show_usage:
+    ; Unknown switch detected, display available options and exit
+    invoke LocalFree, pArgv
+
+    ; Attach to parent console (ATTACH_PARENT_PROCESS)
+    invoke AttachConsole, 0FFFFFFFFh
+    test eax, eax
+    jz show_usage_exit
+
+    ; Get stdout handle (STD_OUTPUT_HANDLE)
+    invoke GetStdHandle, 0FFFFFFF5h
+    mov ebx, eax
+
+    ; Calculate usage text length and write to console
+    invoke wcslen_p, offset str_usage
+    mov ecx, eax
+    invoke WriteConsoleW, ebx, offset str_usage, ecx, addr argc, 0
+
+show_usage_exit:
+    invoke ExitProcess, 1
+
 mode_gui_free:
     invoke LocalFree, pArgv                 ; Free argv and go to GUI mode
     jmp mode_gui
@@ -921,5 +1210,206 @@ exit_app:
     invoke ExitProcess, 0                   ; Normal exit
     ret
 start endp
+
+; ==============================================================================
+; InstallContextMenu - Register Explorer context menu entries
+;
+; Purpose: Creates registry keys under HKEY_CLASSES_ROOT for context menu
+;          entries that allow running executables and opening directories
+;          with TrustedInstaller privileges.
+;
+; Registry locations created:
+;   - Directory\Background\shell\CMDT (background right-click in folders)
+;   - Directory\shell\CMDT (right-click on folder icons)
+;   - exefile\shell\CMDT (right-click on .exe files)
+;   - lnkfile\shell\CMDT (right-click on .lnk shortcut files)
+;
+; Each entry includes:
+;   - Default value: Menu text ("Open CMD as TrustedInstaller" or "Run as TrustedInstaller")
+;   - Icon value: shell32.dll,104 (UAC shield icon)
+;   - command subkey: Command line to execute when menu item is selected
+;
+; Commands generated:
+;   - For directories: "<exepath>" -cli -new cmd.exe /k cd /d "%V"
+;   - For files: "<exepath>" "%1"
+;
+; Parameters: None (uses global g_exePath and g_tempBuf buffers)
+;
+; Returns: None (ignores errors to allow partial installation)
+; ==============================================================================
+InstallContextMenu proc uses ebx esi edi
+    LOCAL hKey:DWORD
+    LOCAL dwDisp:DWORD
+
+    ; Get our exe path for command strings
+    invoke GetModuleFileNameW, 0, offset g_exePath, 260
+
+    ; Build directory command string: "<exepath>" -cli -new cmd.exe /k cd /d "%V"
+    invoke wcscpy_p, offset g_tempBuf, offset str_cmdQuote
+    invoke wcscat_p, offset g_tempBuf, offset g_exePath
+    invoke wcscat_p, offset g_tempBuf, offset str_cmdSuffixDir
+
+    ; Calculate string byte sizes (characters + null terminator, then * 2 for wide chars)
+    invoke wcslen_p, offset g_tempBuf
+    inc eax
+    shl eax, 1
+    mov ebx, eax               ; EBX = directory command string byte size
+
+    invoke wcslen_p, offset str_ctxTextDir
+    inc eax
+    shl eax, 1
+    push eax                   ; Save directory menu text byte size on stack
+
+    invoke wcslen_p, offset str_iconPath
+    inc eax
+    shl eax, 1
+    mov esi, eax               ; ESI = icon path byte size (shell32.dll,104)
+
+    ; --- Directory\Background\shell\CMDT (parent key) ---
+    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyBg, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
+    test eax, eax
+    jnz ctx_install_done_pop   ; Error creating key
+
+    ; Set default value = "Open CMD as TrustedInstaller"
+    pop edi                    ; EDI = directory menu text byte size
+    push edi                   ; Save it back on stack
+    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset str_ctxTextDir, edi
+    
+    ; Set Icon = shell32.dll,104
+    invoke RegSetValueExW, hKey, offset str_iconVal, 0, REG_SZ, offset str_iconPath, esi
+    invoke RegCloseKey, hKey
+
+    ; --- Directory\Background\shell\CMDT\command (command subkey) ---
+    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdBg, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
+    test eax, eax
+    jnz ctx_install_done_pop
+
+    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset g_tempBuf, ebx
+    invoke RegCloseKey, hKey
+
+    ; --- Directory\shell\CMDT (parent key) ---
+    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyDir, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
+    test eax, eax
+    jnz ctx_install_done_pop
+
+    pop edi                    ; EDI = directory menu text byte size
+    push edi                   ; Save it back
+    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset str_ctxTextDir, edi
+    invoke RegSetValueExW, hKey, offset str_iconVal, 0, REG_SZ, offset str_iconPath, esi
+    invoke RegCloseKey, hKey
+
+    ; --- Directory\shell\CMDT\command (command subkey) ---
+    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdDir, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
+    test eax, eax
+    jnz ctx_install_done_pop
+
+    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset g_tempBuf, ebx
+    invoke RegCloseKey, hKey
+
+    ; Build file command string: "<exepath>" "%1"
+    invoke wcscpy_p, offset g_tempBuf, offset str_cmdQuote
+    invoke wcscat_p, offset g_tempBuf, offset g_exePath
+    invoke wcscat_p, offset g_tempBuf, offset str_cmdSuffixFile
+
+    ; Calculate file command string byte size
+    invoke wcslen_p, offset g_tempBuf
+    inc eax
+    shl eax, 1
+    mov ebx, eax               ; EBX = file command string byte size
+
+    ; Calculate file menu text byte size
+    invoke wcslen_p, offset str_ctxTextFile
+    inc eax
+    shl eax, 1
+    mov edi, eax               ; EDI = file menu text byte size
+
+    ; --- exefile\shell\CMDT (parent key) ---
+    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyExe, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
+    test eax, eax
+    jnz ctx_install_done_pop
+
+    ; Set default value = "Run as TrustedInstaller"
+    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset str_ctxTextFile, edi
+    
+    ; Set Icon = shell32.dll,104
+    invoke RegSetValueExW, hKey, offset str_iconVal, 0, REG_SZ, offset str_iconPath, esi
+    invoke RegCloseKey, hKey
+
+    ; --- exefile\shell\CMDT\command (command subkey) ---
+    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdExe, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
+    test eax, eax
+    jnz ctx_install_done_pop
+
+    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset g_tempBuf, ebx
+    invoke RegCloseKey, hKey
+
+    ; --- lnkfile\shell\CMDT (parent key) ---
+    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyLnk, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
+    test eax, eax
+    jnz ctx_install_done_pop
+
+    ; Set default value = "Run as TrustedInstaller"
+    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset str_ctxTextFile, edi
+    
+    ; Set Icon = shell32.dll,104
+    invoke RegSetValueExW, hKey, offset str_iconVal, 0, REG_SZ, offset str_iconPath, esi
+    invoke RegCloseKey, hKey
+
+    ; --- lnkfile\shell\CMDT\command (command subkey) ---
+    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdLnk, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
+    test eax, eax
+    jnz ctx_install_done_pop
+
+    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset g_tempBuf, ebx
+    invoke RegCloseKey, hKey
+
+ctx_install_done_pop:
+    pop eax                    ; Clean up stack (directory menu text byte size)
+ctx_install_done:
+    ret
+InstallContextMenu endp
+
+; ==============================================================================
+; UninstallContextMenu - Remove Explorer context menu entries
+;
+; Purpose: Deletes all CMDT registry keys from HKEY_CLASSES_ROOT that were
+;          created by InstallContextMenu. Removes context menu entries for
+;          directories, executable files, and shortcut files.
+;
+; Registry locations deleted (in order, children first):
+;   - Directory\Background\shell\CMDT\command
+;   - Directory\Background\shell\CMDT
+;   - Directory\shell\CMDT\command
+;   - Directory\shell\CMDT
+;   - exefile\shell\CMDT\command
+;   - exefile\shell\CMDT
+;   - lnkfile\shell\CMDT\command
+;   - lnkfile\shell\CMDT
+;
+; Parameters: None
+;
+; Returns: None (ignores deletion errors)
+;
+; Note: Keys must be deleted in order from leaf nodes to parent nodes,
+;       as Windows registry does not allow deletion of keys with subkeys.
+; ==============================================================================
+UninstallContextMenu proc
+    ; Delete Directory\Background entries (leaf keys first)
+    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdBg
+    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyBg
+    
+    ; Delete Directory entries (leaf keys first)
+    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdDir
+    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyDir
+    
+    ; Delete exefile entries (leaf keys first)
+    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdExe
+    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyExe
+    
+    ; Delete lnkfile entries (leaf keys first)
+    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdLnk
+    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyLnk
+    ret
+UninstallContextMenu endp
 
 end start

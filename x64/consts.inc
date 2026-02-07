@@ -242,6 +242,7 @@ ATTACH_PARENT_PROCESS       EQU 0FFFFFFFFh ; Attach to parent console
 ; REGISTRY CONSTANTS
 ; ==============================================================================
 HKEY_CURRENT_USER           EQU 80000001h ; Current user registry hive
+HKEY_CLASSES_ROOT           EQU 80000000h ; Classes root registry hive
 KEY_READ                    EQU 00020019h ; Read access to registry key
 KEY_WRITE                   EQU 00020006h ; Write access to registry key
 REG_SZ                      EQU 00000001h ; String registry value type

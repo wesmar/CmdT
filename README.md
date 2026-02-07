@@ -1,12 +1,12 @@
 # CMDT - Run as TrustedInstaller
 
-![Tetris Gameplay](images/cmdt.gif)
+![cmdt](images/cmdt.gif)
 
 **The smallest fully functional TrustedInstaller elevation tool for Windows, written entirely in bare-metal x86/x64 assembly.**
 
 CMDT launches any process under the **NT SERVICE\TrustedInstaller** security context — the highest privilege level in Windows, above both Administrator and SYSTEM. It enables all 34 Windows security privileges in the spawned process token, giving unrestricted access to every protected resource on the system.
 
-The entire tool compiles to **~20 KB** (x64) and **~16 KB** (x86). No C runtime. No frameworks. No external dependencies beyond the Windows kernel and a handful of system DLLs that ship with every Windows installation since Vista.
+The entire tool compiles to **under 25 KB** (x64) and **under 20 KB** (x86). No C runtime. No frameworks. No external dependencies beyond the Windows kernel and a handful of system DLLs that ship with every Windows installation since Vista.
 
 ---
 
@@ -35,16 +35,19 @@ Both architectures — **x86 (IA-32)** and **x64 (AMD64)** — are built from se
 
 | Binary | Size | Architecture |
 |---|---|---|
-| `cmdt_x64.exe` | **19 968 bytes** (~20 KB) | x64 / AMD64 |
-| `cmdt_x86.exe` | **15 872 bytes** (~16 KB) | x86 / IA-32 |
+| `cmdt_x64.exe` | **under 25 KB** | x64 / AMD64 |
+| `cmdt_x86.exe` | **under 20 KB** | x86 / IA-32 |
 
-For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection — in under 20 KB. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
+For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, UAC self-elevation — in under 25 KB. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
 
 ---
 
 ## Features
 
 - **Dual-mode operation** — GUI and CLI from a single binary, selected at runtime
+- **UAC self-elevation** — automatically prompts for admin rights via `ShellExecuteEx("runas")` if not already elevated, forwarding all original command-line arguments to the elevated instance
+- **Explorer context menu integration** — `cmdt -install` registers right-click entries for directories, executables, and shortcuts; `cmdt -uninstall` removes them (see [Context Menu Integration](#context-menu-integration))
+- **CLI help** — passing an unknown switch (e.g. `cmdt -help`) prints all available options to the parent console via `AttachConsole` + `WriteConsoleW`
 - **All 34 security privileges** enabled in the spawned token (see [Privilege Composition](#privilege-composition))
 - **Token caching** — 30-second TTL avoids redundant privilege escalation on repeated runs
 - **MRU history** — last 5 commands persisted in the registry, available in a dropdown
@@ -61,7 +64,17 @@ For comparison, equivalent tools written in C++ or C# typically weigh in at 50�
 
 ## Installation
 
-No installation required. Copy `cmdt_x64.exe` (or `cmdt_x86.exe` for 32-bit systems) anywhere on your system. The tool must be **run as Administrator** — TrustedInstaller token acquisition requires `SeDebugPrivilege` and `SeImpersonatePrivilege`, which are only available to elevated processes.
+No installation required. Copy `cmdt_x64.exe` (or `cmdt_x86.exe` for 32-bit systems) anywhere on your system. A natural location is `C:\Windows\System32` — this is where Microsoft places its own system utilities, and it makes CMDT available from any command prompt without modifying `PATH`.
+
+CMDT requires Administrator privileges. If launched without elevation, it **automatically re-launches itself** with a UAC prompt via `ShellExecuteEx("runas")`, forwarding all original arguments to the elevated instance. No manual "Run as Administrator" is needed.
+
+To register Explorer context menu entries, run:
+
+```
+cmdt -install
+```
+
+This creates right-click menu items for directories, `.exe` files, and `.lnk` shortcuts. See [Context Menu Integration](#context-menu-integration) for details.
 
 ### Requirements
 
@@ -98,7 +111,19 @@ Prefix any command with `-cli` (or `--cli` or `cli`) to run headless, inheriting
 
 ```
 cmdt_x64.exe -cli <command>
+cmdt_x64.exe -cli -new <command>
+cmdt_x64.exe -install
+cmdt_x64.exe -uninstall
 ```
+
+| Switch | Description |
+|---|---|
+| `-cli <command>` | Run command as TrustedInstaller, inheriting the current console |
+| `-cli -new <command>` | Run command in a new, separate console window |
+| `-install` | Register Explorer context menu entries under HKCR |
+| `-uninstall` | Remove all CMDT context menu entries |
+| `(unknown switch)` | Display available options to the console |
+| `(no arguments)` | Launch GUI mode |
 
 #### Basic examples
 
@@ -113,7 +138,7 @@ cmdt_x64.exe -cli regedit.exe
 cmdt_x64.exe -cli powershell
 
 # Launch a specific executable with full path
-cmdt_x64.exe -cli C:\Windows\System32\notepad.exe
+cmdt_x64.exe -cli notepad
 ```
 
 #### I/O redirection — why it matters for scripting
@@ -177,9 +202,41 @@ The `.lnk` extension check is case-insensitive, implemented via a hand-written w
 
 ---
 
+## Context Menu Integration
+
+Running `cmdt -install` registers four context menu entries under `HKEY_CLASSES_ROOT`:
+
+| Registry Path | Menu Text | Behavior |
+|---|---|---|
+| `Directory\Background\shell\CMDT` | Open CMD as TrustedInstaller | Right-click on desktop or inside any folder |
+| `Directory\shell\CMDT` | Open CMD as TrustedInstaller | Right-click on a folder icon |
+| `exefile\shell\CMDT` | Run as TrustedInstaller | Right-click on any `.exe` file |
+| `lnkfile\shell\CMDT` | Run as TrustedInstaller | Right-click on any `.lnk` shortcut |
+
+### How it works
+
+- **Directory entries** execute: `"<exepath>" -cli -new cmd.exe /k cd /d "%V"` — this opens a TrustedInstaller command prompt in the selected directory.
+- **File entries** execute: `"<exepath>" "%1"` — CMDT receives the file path as an argument. For `.exe` files, it runs the executable directly. For `.lnk` shortcuts, it resolves the target via the COM `IShellLink` interface before execution.
+
+Each entry displays a UAC shield icon borrowed from `shell32.dll` (icon index 104 — the "keys" icon). The binary itself contains **no embedded icon resource** (no `.ico` file). This is the same approach Microsoft uses for its own system utilities that reside in `System32`. Since CMDT is designed to live in `System32` by default, it does not need a standalone icon — Explorer resolves the `shell32.dll,104` reference at display time.
+
+### Removal
+
+```
+cmdt -uninstall
+```
+
+This deletes all eight registry keys (four parent keys + four `command` subkeys) in leaf-first order, as the Windows registry does not allow deletion of keys that still contain subkeys.
+
+---
+
 ## How It Works — Token Inheritance Chain
 
 CMDT performs a multi-stage privilege escalation to obtain a fully privileged TrustedInstaller token. Each stage builds on the previous one, forming an inheritance chain:
+
+### Stage 0: UAC Self-Elevation
+
+Before any token work begins, CMDT checks `IsUserAnAdmin()`. If the process is not running elevated, it re-launches itself via `ShellExecuteExW` with the `"runas"` verb, forwarding the original command-line arguments to the new instance. The non-elevated process then exits immediately. This makes CMDT self-elevating — the user never needs to manually "Run as Administrator".
 
 ### Stage 1: Self-Elevation
 
@@ -305,7 +362,7 @@ The manifest declares a Side-by-Side (SxS) dependency on `Microsoft.Windows.Comm
 
 ### Execution Level
 
-The manifest specifies `requestedExecutionLevel=asInvoker`, meaning CMDT does not force its own elevation dialog. The user is expected to launch it from an already-elevated context (right-click → Run as Administrator, or from an elevated terminal). This is intentional — CMDT acquires TrustedInstaller privileges programmatically via token manipulation, not via manifest-driven UAC prompts.
+The manifest specifies `requestedExecutionLevel=asInvoker`. CMDT does not rely on the manifest for elevation — instead, it programmatically checks `IsUserAnAdmin()` at startup and re-launches itself via `ShellExecuteExW("runas")` if not elevated. This approach allows the same binary to be invoked silently from already-elevated contexts (scripts, scheduled tasks, elevated terminals) without triggering a redundant UAC prompt, while still self-elevating when launched from a standard user session.
 
 ---
 
@@ -372,8 +429,8 @@ cmdt_asm/
 │   ├── consts.inc
 │   └── globals.inc
 ├── bin/                    # Compiled binaries
-│   ├── cmdt_x64.exe        # 64-bit binary (~20 KB)
-│   └── cmdt_x86.exe        # 32-bit binary (~16 KB)
+│   ├── cmdt_x64.exe        # 64-bit binary (<25 KB)
+│   └── cmdt_x86.exe        # 32-bit binary (<20 KB)
 ├── cmdt.rc                 # Version info resource
 ├── cmdt.manifest           # Application manifest (DPI, visual styles, execution level)
 ├── build.ps1               # Build script (assembles + links both architectures)
@@ -451,6 +508,21 @@ Copyright (c) 2026 Marek Wesolowski
 **Marek Wesolowski**
 - Web: [https://kvc.pl](https://kvc.pl)
 - E-mail: marek@kvc.pl
+
+---
+
+## Size Trivia
+
+During early development, the minimal proof-of-concept builds were significantly smaller:
+
+| Variant | Size | Notes |
+|---|---|---|
+| CLI-only (no GUI, no registry, no manifest) | **4 KB** | Bare token acquisition + `CreateProcessWithTokenW` |
+| Hybrid GUI/CLI (no registry, no manifest) | **6 KB** | Added window creation, MRU, drag-and-drop |
+| Current full build (x86) | **<20 KB** | Hybrid mode, context menu, UAC self-elevation, manifest, COM `.lnk` resolution |
+| Current full build (x64) | **<25 KB** | Same feature set, 64-bit calling convention overhead |
+
+The growth from 4–6 KB to the current size is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, UAC self-elevation, and the wide-character string constants for registry paths and UI text. The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
 
 ---
 

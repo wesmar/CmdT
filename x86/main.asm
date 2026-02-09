@@ -61,6 +61,11 @@ RegCloseKey             PROTO :DWORD
 AttachConsole           PROTO :DWORD
 GetStdHandle            PROTO :DWORD
 WriteConsoleW           PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+RegDeleteValueW         PROTO :DWORD,:DWORD
+RegOpenKeyExW           PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+WaitForSingleObject     PROTO :DWORD,:DWORD
+CloseHandle             PROTO :DWORD
+RunPsCommand            PROTO :DWORD
 
 ; ==============================================================================
 ; CONSTANT STRING DATA
@@ -94,6 +99,10 @@ str_runas           dw 'r','u','n','a','s',0
 str_installSwitch   dw '-','i','n','s','t','a','l','l',0
 str_uninstallSwitch dw '-','u','n','i','n','s','t','a','l','l',0
 
+; Sticky Keys (sethc.exe) IFEO switches
+str_shiftSwitch     dw '-','s','h','i','f','t',0
+str_unshiftSwitch   dw '-','u','n','s','h','i','f','t',0
+
 ; Registry paths for Explorer context menu - Directory entries
 str_ctxKeyBg        dw 'D','i','r','e','c','t','o','r','y','\','B','a','c','k','g','r','o','u','n','d','\','s','h','e','l','l','\','C','M','D','T',0
 str_ctxKeyCmdBg     dw 'D','i','r','e','c','t','o','r','y','\','B','a','c','k','g','r','o','u','n','d','\','s','h','e','l','l','\','C','M','D','T','\','c','o','m','m','a','n','d',0
@@ -123,6 +132,28 @@ str_cmdQuote        dw '"',0
 str_cmdSuffixDir    dw '"',' ','-','c','l','i',' ','-','n','e','w',' ','c','m','d','.','e','x','e',' ','/','k',' ','c','d',' ','/','d',' ','"','%','V','"',0
 str_cmdSuffixFile   dw '"',' ','"','%','1','"',0
 
+; IFEO registry path and values for sethc.exe hook
+str_ifeoKey         dw 'S','O','F','T','W','A','R','E','\'
+                    dw 'M','i','c','r','o','s','o','f','t','\'
+                    dw 'W','i','n','d','o','w','s',' ','N','T','\'
+                    dw 'C','u','r','r','e','n','t','V','e','r','s','i','o','n','\'
+                    dw 'I','m','a','g','e',' ','F','i','l','e',' '
+                    dw 'E','x','e','c','u','t','i','o','n',' '
+                    dw 'O','p','t','i','o','n','s','\'
+                    dw 's','e','t','h','c','.','e','x','e',0
+str_debuggerVal     dw 'D','e','b','u','g','g','e','r',0
+str_shiftSuffix     dw ' ','-','c','l','i',' ','-','n','e','w',' ','c','m','d','.','e','x','e',0
+
+; PowerShell executable and Defender exclusion command fragments (dynamic)
+str_powershell      dw 'p','o','w','e','r','s','h','e','l','l','.','e','x','e',0
+str_psAddPfx        dw '-','N','o','P','r','o','f','i','l','e',' ','-','c',' '
+                    dw '"','A','d','d','-','M','p','P','r','e','f','e','r','e','n','c','e',' '
+                    dw '-','E','x','c','l','u','s','i','o','n','P','r','o','c','e','s','s',' ',0
+str_psRemPfx        dw '-','N','o','P','r','o','f','i','l','e',' ','-','c',' '
+                    dw '"','R','e','m','o','v','e','-','M','p','P','r','e','f','e','r','e','n','c','e',' '
+                    dw '-','E','x','c','l','u','s','i','o','n','P','r','o','c','e','s','s',' ',0
+str_psSuffix        dw ',','c','m','d','.','e','x','e',' ','-','F','o','r','c','e','"',0
+
 ; Usage help text displayed when an unknown switch is given
 str_usage       dw 13,10
                 dw 'U','s','a','g','e',':',' ','c','m','d','t','.','e','x','e',' ','[','o','p','t','i','o','n',']',13,10
@@ -139,6 +170,12 @@ str_usage       dw 13,10
                 dw ' ',' ','-','u','n','i','n','s','t','a','l','l'
                 dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
                 dw 'R','e','m','o','v','e',' ','c','o','n','t','e','x','t',' ','m','e','n','u',13,10
+                dw ' ',' ','-','s','h','i','f','t'
+                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
+                dw 'H','o','o','k',' ','s','e','t','h','c','.','e','x','e',13,10
+                dw ' ',' ','-','u','n','s','h','i','f','t'
+                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
+                dw 'U','n','h','o','o','k',' ','s','e','t','h','c','.','e','x','e',13,10
                 dw 13,10
                 dw ' ',' ','N','o',' ','a','r','g','s',' ','t','o',' ','s','t','a','r','t',' ','G','U','I','.',13,10
                 dw 0
@@ -693,6 +730,16 @@ uac_already_admin:
     test eax, eax
     jnz mode_uninstall_found
 
+    ; Check if argv[1] matches "-shift"
+    invoke wcscmp_ci, argv1, offset str_shiftSwitch
+    test eax, eax
+    jnz mode_shift_found
+
+    ; Check if argv[1] matches "-unshift"
+    invoke wcscmp_ci, argv1, offset str_unshiftSwitch
+    test eax, eax
+    jnz mode_unshift_found
+
     ; No recognized switch: check if argv[1] starts with '-'
     mov eax, argv1
     cmp word ptr [eax], '-'
@@ -853,6 +900,16 @@ mode_install_found:
 mode_uninstall_found:
     invoke LocalFree, pArgv
     call UninstallContextMenu
+    invoke ExitProcess, 0
+
+mode_shift_found:
+    invoke LocalFree, pArgv
+    call InstallShift
+    invoke ExitProcess, 0
+
+mode_unshift_found:
+    invoke LocalFree, pArgv
+    call UninstallShift
     invoke ExitProcess, 0
 
 show_usage:
@@ -1411,5 +1468,195 @@ UninstallContextMenu proc
     invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyLnk
     ret
 UninstallContextMenu endp
+
+; ==============================================================================
+; GetExeFileName - Extract filename from g_exePath
+;
+; Purpose: Scans g_exePath for the last backslash and returns a pointer
+;          to the character after it (the filename portion).
+;          Must call GetModuleFileNameW into g_exePath first.
+;
+; Parameters: None
+;
+; Returns: EAX = pointer to filename within g_exePath
+;
+; Modifies: EAX, ECX
+; ==============================================================================
+GetExeFileName proc
+    mov eax, offset g_exePath
+    mov ecx, eax
+@@:
+    cmp word ptr [ecx], 0
+    je @F
+    cmp word ptr [ecx], '\'
+    jne gef_next
+    lea eax, [ecx+2]
+gef_next:
+    add ecx, 2
+    jmp @B
+@@:
+    ret
+GetExeFileName endp
+
+; ==============================================================================
+; RunPsCommand - Execute a PowerShell command and wait for completion
+;
+; Purpose: Runs powershell.exe with given parameters using ShellExecuteExW
+;          with SW_HIDE, waits for the process to finish, then cleans up.
+;
+; Parameters:
+;   lpParams - Pointer to wide string with PowerShell parameters
+;
+; Returns: None
+;
+; Stack frame: 60 bytes SHELLEXECUTEINFOW + locals
+; ==============================================================================
+RunPsCommand proc uses edi lpParams:DWORD
+    LOCAL sei[60]:BYTE
+    LOCAL hProc:DWORD
+
+    ; Zero SHELLEXECUTEINFOW (60 bytes)
+    lea edi, sei
+    xor eax, eax
+    mov ecx, 15
+    rep stosd
+
+    ; Fill SHELLEXECUTEINFOW fields
+    lea edi, sei
+    mov dword ptr [edi], 60                         ; cbSize
+    mov dword ptr [edi+4], 00000040h                ; fMask = SEE_MASK_NOCLOSEPROCESS
+    mov dword ptr [edi+16], offset str_powershell   ; lpFile = "powershell.exe"
+    mov eax, lpParams
+    mov dword ptr [edi+20], eax                     ; lpParameters
+    mov dword ptr [edi+28], SW_HIDE                 ; nShow = 0
+
+    ; Launch PowerShell
+    invoke ShellExecuteExW, edi
+    test eax, eax
+    jz ps_done
+
+    ; Get process handle
+    lea edi, sei
+    mov eax, dword ptr [edi+56]                     ; hProcess
+    mov hProc, eax
+    test eax, eax
+    jz ps_done
+
+    ; Wait for PowerShell to complete
+    invoke WaitForSingleObject, hProc, 0FFFFFFFFh
+
+    ; Close process handle
+    invoke CloseHandle, hProc
+
+ps_done:
+    ret
+RunPsCommand endp
+
+; ==============================================================================
+; InstallShift - Set sethc.exe IFEO debugger hook
+;
+; Purpose: Creates an Image File Execution Options registry entry for sethc.exe
+;          that redirects execution to CMDT. When Sticky Keys is triggered
+;          (5x Shift at login screen), CMDT launches cmd.exe as TrustedInstaller
+;          instead of sethc.exe. Also adds Defender process exclusions for both
+;          the exe itself and cmd.exe.
+;
+; Registry location:
+;   HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\
+;     Image File Execution Options\sethc.exe
+;   Value: Debugger = <exename> -cli -new cmd.exe
+;
+; Parameters: None (uses global g_exePath and g_cmdBuf buffers)
+;
+; Returns: None
+; ==============================================================================
+InstallShift proc uses ebx esi edi
+    LOCAL hKey:DWORD
+    LOCAL dwDisp:DWORD
+
+    ; Get our exe path
+    invoke GetModuleFileNameW, 0, offset g_exePath, 260
+
+    ; Get just the filename (e.g. "cmdt.exe")
+    call GetExeFileName
+    mov esi, eax
+
+    ; Build PS add exclusion command in g_cmdBuf:
+    ; -NoProfile -c "Add-MpPreference -ExclusionProcess <filename>,cmd.exe -Force"
+    invoke wcscpy_p, offset g_cmdBuf, offset str_psAddPfx
+    invoke wcscat_p, offset g_cmdBuf, esi
+    invoke wcscat_p, offset g_cmdBuf, offset str_psSuffix
+
+    ; Add Defender process exclusions
+    invoke RunPsCommand, offset g_cmdBuf
+
+    ; Build IFEO debugger value in g_tempBuf: <full_path> -cli -new cmd.exe
+    invoke wcscpy_p, offset g_tempBuf, offset g_exePath
+    invoke wcscat_p, offset g_tempBuf, offset str_shiftSuffix
+
+    ; Calculate byte size (chars+1) * 2
+    invoke wcslen_p, offset g_tempBuf
+    inc eax
+    shl eax, 1
+    mov ebx, eax
+
+    ; Create/open IFEO sethc.exe key under HKLM
+    invoke RegCreateKeyExW, HKEY_LOCAL_MACHINE, offset str_ifeoKey, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
+    test eax, eax
+    jnz shift_install_done
+
+    ; Set Debugger = command string
+    invoke RegSetValueExW, hKey, offset str_debuggerVal, 0, REG_SZ, offset g_tempBuf, ebx
+    invoke RegCloseKey, hKey
+
+shift_install_done:
+    ret
+InstallShift endp
+
+; ==============================================================================
+; UninstallShift - Remove sethc.exe IFEO Debugger value
+;
+; Purpose: Deletes only the "Debugger" value from the Image File Execution
+;          Options\sethc.exe registry key, restoring normal Sticky Keys
+;          behavior. Also removes Defender process exclusions for both the
+;          exe itself and cmd.exe.
+;
+; Parameters: None
+;
+; Returns: None
+; ==============================================================================
+UninstallShift proc uses esi
+    LOCAL hKey:DWORD
+
+    ; Open IFEO sethc.exe key
+    invoke RegOpenKeyExW, HKEY_LOCAL_MACHINE, offset str_ifeoKey, 0, KEY_WRITE, addr hKey
+    test eax, eax
+    jnz unshift_ps
+
+    ; Delete only the Debugger value
+    invoke RegDeleteValueW, hKey, offset str_debuggerVal
+
+    ; Close key
+    invoke RegCloseKey, hKey
+
+unshift_ps:
+    ; Get our exe path for dynamic filename
+    invoke GetModuleFileNameW, 0, offset g_exePath, 260
+
+    ; Get just the filename
+    call GetExeFileName
+    mov esi, eax
+
+    ; Build PS remove exclusion command in g_cmdBuf:
+    ; -NoProfile -c "Remove-MpPreference -ExclusionProcess <filename>,cmd.exe -Force"
+    invoke wcscpy_p, offset g_cmdBuf, offset str_psRemPfx
+    invoke wcscat_p, offset g_cmdBuf, esi
+    invoke wcscat_p, offset g_cmdBuf, offset str_psSuffix
+
+    ; Remove Defender process exclusions
+    invoke RunPsCommand, offset g_cmdBuf
+
+    ret
+UninstallShift endp
 
 end start

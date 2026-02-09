@@ -38,7 +38,7 @@ Both architectures — **x86 (IA-32)** and **x64 (AMD64)** — are built from se
 | `cmdt_x64.exe` | **under 25 KB** | x64 / AMD64 |
 | `cmdt_x86.exe` | **under 20 KB** | x86 / IA-32 |
 
-For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, UAC self-elevation — in under 25 KB. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
+For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in under 25 KB. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
 
 ---
 
@@ -47,6 +47,8 @@ For comparison, equivalent tools written in C++ or C# typically weigh in at 50�
 - **Dual-mode operation** — GUI and CLI from a single binary, selected at runtime
 - **UAC self-elevation** — automatically prompts for admin rights via `ShellExecuteEx("runas")` if not already elevated, forwarding all original command-line arguments to the elevated instance
 - **Explorer context menu integration** — `cmdt -install` registers right-click entries for directories, executables, and shortcuts; `cmdt -uninstall` removes them (see [Context Menu Integration](#context-menu-integration))
+- **Sticky Keys IFEO hook** — `cmdt -shift` installs an Image File Execution Options debugger redirect for `sethc.exe`, so pressing Shift 5 times at the login screen opens a TrustedInstaller command prompt instead of Sticky Keys; `cmdt -unshift` reverts to default behavior (see [Sticky Keys IFEO Hook](#sticky-keys-ifeo-hook))
+- **Windows Defender exclusions** — `-shift` and `-unshift` automatically add or remove process exclusions for the CMDT binary and `cmd.exe` via `Add-MpPreference` / `Remove-MpPreference`, preventing false-positive interference
 - **CLI help** — passing an unknown switch (e.g. `cmdt -help`) prints all available options to the parent console via `AttachConsole` + `WriteConsoleW`
 - **All 34 security privileges** enabled in the spawned token (see [Privilege Composition](#privilege-composition))
 - **Token caching** — 30-second TTL avoids redundant privilege escalation on repeated runs
@@ -114,6 +116,8 @@ cmdt_x64.exe -cli <command>
 cmdt_x64.exe -cli -new <command>
 cmdt_x64.exe -install
 cmdt_x64.exe -uninstall
+cmdt_x64.exe -shift
+cmdt_x64.exe -unshift
 ```
 
 | Switch | Description |
@@ -122,6 +126,8 @@ cmdt_x64.exe -uninstall
 | `-cli -new <command>` | Run command in a new, separate console window |
 | `-install` | Register Explorer context menu entries under HKCR |
 | `-uninstall` | Remove all CMDT context menu entries |
+| `-shift` | Install Sticky Keys IFEO hook + Defender exclusions |
+| `-unshift` | Remove Sticky Keys IFEO hook + Defender exclusions |
 | `(unknown switch)` | Display available options to the console |
 | `(no arguments)` | Launch GUI mode |
 
@@ -227,6 +233,50 @@ cmdt -uninstall
 ```
 
 This deletes all eight registry keys (four parent keys + four `command` subkeys) in leaf-first order, as the Windows registry does not allow deletion of keys that still contain subkeys.
+
+---
+
+## Sticky Keys IFEO Hook
+
+Running `cmdt -shift` installs a login-screen backdoor that replaces the Sticky Keys accessibility helper (`sethc.exe`) with a TrustedInstaller command prompt. Running `cmdt -unshift` reverses the process completely.
+
+### How it works
+
+Windows supports **Image File Execution Options (IFEO)** — a documented registry mechanism under `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\` that allows attaching a debugger to any executable. When an IFEO `Debugger` value exists for a given binary, Windows launches the debugger *instead of* the original program, passing the original path as an argument.
+
+`cmdt -shift` creates the following registry entry:
+
+| Key | Value | Data |
+|---|---|---|
+| `HKLM\...\Image File Execution Options\sethc.exe` | `Debugger` | `<exepath> -cli -new cmd.exe` |
+
+When the user presses **Shift five times** at the Windows login screen, the OS launches `sethc.exe` — but the IFEO redirect intercepts this and runs CMDT instead. CMDT then performs its full token acquisition pipeline (SYSTEM impersonation → TrustedInstaller service start → token duplication → privilege enablement) and opens an interactive `cmd.exe` window running as `NT SERVICE\TrustedInstaller`.
+
+This provides a **pre-login recovery console** with the highest privilege level available in Windows — useful for:
+
+- Emergency system repair when the machine cannot be logged into
+- Resetting locked-out local accounts via `net user`
+- Fixing corrupted registry hives or group policies that prevent login
+- Recovering from ransomware or malware that blocks the desktop
+
+### Windows Defender exclusions
+
+Both `-shift` and `-unshift` manage Windows Defender process exclusions automatically. This prevents Defender from flagging CMDT or the spawned `cmd.exe` as suspicious during the IFEO-redirected launch at the login screen, where no user session exists to dismiss alerts.
+
+| Switch | PowerShell command executed |
+|---|---|
+| `-shift` | `Add-MpPreference -ExclusionProcess <filename>,cmd.exe -Force` |
+| `-unshift` | `Remove-MpPreference -ExclusionProcess <filename>,cmd.exe -Force` |
+
+The commands run via a hidden `ShellExecuteExW` call to `powershell.exe` with `-NoProfile`, waited to completion before the process exits.
+
+### Removal
+
+```
+cmdt -unshift
+```
+
+This deletes the `Debugger` value from the IFEO registry key (leaving the key itself intact, as it may contain other unrelated values) and removes both Defender process exclusions. Normal Sticky Keys behavior is fully restored.
 
 ---
 
@@ -522,7 +572,7 @@ During early development, the minimal proof-of-concept builds were significantly
 | Current full build (x86) | **<20 KB** | Hybrid mode, context menu, UAC self-elevation, manifest, COM `.lnk` resolution |
 | Current full build (x64) | **<25 KB** | Same feature set, 64-bit calling convention overhead |
 
-The growth from 4–6 KB to the current size is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, UAC self-elevation, and the wide-character string constants for registry paths and UI text. The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
+The growth from 4–6 KB to the current size is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, the Sticky Keys IFEO hook with Defender exclusion management, UAC self-elevation, and the wide-character string constants for registry paths and UI text. The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
 
 ---
 

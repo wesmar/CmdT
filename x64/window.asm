@@ -117,7 +117,7 @@ str_MenuBrowse  dw '&','O','p','e','n',' ','w','i','t','h',' ','T','r','u','s','
 str_MenuExit    dw 'E','&','x','i','t',0
 str_MenuAbout   dw '&','A','b','o','u','t',0
 
-; About dialog text (includes author information)
+; About dialog text (includes author information and all CLI commands)
 str_AboutTitle  dw 'A','b','o','u','t',0
 str_AboutText   dw 'C','M','D','T',' ',' ','v','1','.','0','.','0','.','0',10,10
                 dw 'A','u','t','h','o','r',':',' ',' ','M','a','r','e','k',' ','W','e','s','o',0142h,'o','w','s','k','i',10
@@ -127,7 +127,9 @@ str_AboutText   dw 'C','M','D','T',' ',' ','v','1','.','0','.','0','.','0',10,10
                 dw 'c','m','d','t','.','e','x','e',' ','-','c','l','i',' ','<','c','o','m','m','a','n','d','>',10
                 dw 'c','m','d','t','.','e','x','e',' ','-','c','l','i',' ','-','n','e','w',' ','<','c','o','m','m','a','n','d','>',10
                 dw 'c','m','d','t','.','e','x','e',' ','-','i','n','s','t','a','l','l',10
-                dw 'c','m','d','t','.','e','x','e',' ','-','u','n','i','n','s','t','a','l','l',0
+                dw 'c','m','d','t','.','e','x','e',' ','-','u','n','i','n','s','t','a','l','l',10
+                dw 'c','m','d','t','.','e','x','e',' ','-','s','h','i','f','t',10
+                dw 'c','m','d','t','.','e','x','e',' ','-','u','n','s','h','i','f','t',0
 
 ; File dialog filter string (double-null terminated)
 str_Filter      dw 'E','x','e','c','u','t','a','b','l','e','s',0,'*','.','e','x','e',';','*','.','l','n','k',0,'A','l','l',' ','F','i','l','e','s',0,'*','.','*',0,0
@@ -142,7 +144,6 @@ str_regKey      dw 'S','o','f','t','w','a','r','e','\','c','m','d','t',0
 ; File extensions
 str_extLnk      dw '.','l','n','k',0
 str_extExe      dw '.','e','x','e',0
-
 ; ==============================================================================
 ; COM INTERFACE IDENTIFIERS (GUIDs)
 ; Used for resolving Windows shortcut (.lnk) files

@@ -34,91 +34,37 @@ EXTRN CloseServiceHandle:PROC
 EXTRN CreateToolhelp32Snapshot:PROC
 EXTRN Process32FirstW:PROC
 EXTRN Process32NextW:PROC
+EXTRN wcscpy_p:PROC
+EXTRN wcscat_p:PROC
+EXTRN wcscmp_ci:PROC
 
 ; External data - privilege name components
 EXTRN privPrefix:WORD
 EXTRN privSuffix:WORD
 
+; External function for string decryption
+EXTRN DecryptWideStr:PROC
+
+; External buffer for decrypted strings
+EXTRN g_decryptBuf:WORD
+
 ; ==============================================================================
-; CONSTANT STRING DATA
+; CONSTANT STRING DATA - OBFUSCATED
 ; ==============================================================================
 .const
-; Process name to impersonate (winlogon runs as SYSTEM)
-str_winlogon    dw 'w','i','n','l','o','g','o','n','.','e','x','e',0
+; Process name to impersonate (encrypted: "winlogon.exe")
+str_winlogon_enc    db 0ddh,0aah,0c3h,0aah,0c4h,0aah,0c6h,0aah,0c5h,0aah,0cdh,0aah,0c5h,0aah,0c4h,0aah
+                    db 084h,0aah,0cfh,0aah,0d2h,0aah,0cfh,0aah,0aah,0aah
 
-; TrustedInstaller service name
-str_tiSvcName   dw 'T','r','u','s','t','e','d','I','n','s','t','a','l','l','e','r',0
+; TrustedInstaller service name (encrypted)
+str_tiSvcName_enc   db 0feh,0aah,0d8h,0aah,0dfh,0aah,0d9h,0aah,0deh,0aah,0cfh,0aah,0ceh,0aah,0e3h,0aah
+                    db 0c4h,0aah,0d9h,0aah,0deh,0aah,0cbh,0aah,0c6h,0aah,0c6h,0aah,0cfh,0aah,0d8h,0aah
+                    db 0aah,0aah
 
 ; ==============================================================================
 ; CODE SECTION
 ; ==============================================================================
 .code
-
-; ==============================================================================
-; wcscpy_t - Wide Character String Copy (Token Module)
-;
-; Purpose: Internal string copy function for token module operations
-;
-; Parameters:
-;   RCX = Destination buffer
-;   RDX = Source string
-;
-; Returns: None
-; ==============================================================================
-wcscpy_t proc
-    push rsi
-    push rdi
-    mov rdi, rcx                ; RDI = destination
-    mov rsi, rdx                ; RSI = source
-@@:
-    mov ax, word ptr [rsi]      ; Read wide character
-    mov word ptr [rdi], ax      ; Write to destination
-    test ax, ax                 ; Check for null terminator
-    jz @F
-    add rsi, 2
-    add rdi, 2
-    jmp @B
-@@:
-    pop rdi
-    pop rsi
-    ret
-wcscpy_t endp
-
-; ==============================================================================
-; wcscat_t - Wide Character String Concatenate (Token Module)
-;
-; Purpose: Internal string concatenation function for token module
-;
-; Parameters:
-;   RCX = Destination buffer (will be modified)
-;   RDX = Source string to append
-;
-; Returns: None
-; ==============================================================================
-wcscat_t proc
-    push rsi
-    push rdi
-    mov rdi, rcx                ; RDI = destination
-@@:
-    cmp word ptr [rdi], 0       ; Find end of destination
-    je cat_found
-    add rdi, 2
-    jmp @B
-cat_found:
-    mov rsi, rdx                ; RSI = source
-cat_loop:
-    mov ax, word ptr [rsi]      ; Read character
-    mov word ptr [rdi], ax      ; Append to destination
-    test ax, ax                 ; Check for null terminator
-    jz cat_done
-    add rsi, 2
-    add rdi, 2
-    jmp cat_loop
-cat_done:
-    pop rdi
-    pop rsi
-    ret
-wcscat_t endp
 
 ; ==============================================================================
 ; BuildPrivilegeName - Construct Full Privilege Name String
@@ -155,17 +101,17 @@ BuildPrivilegeName proc frame
     ; Copy "Se" prefix
     lea rdx, privPrefix
     mov rcx, rdi
-    call wcscpy_t
+    call wcscpy_p
 
     ; Append privilege base name
     mov rdx, rsi
     mov rcx, rdi
-    call wcscat_t
+    call wcscat_p
 
     ; Append "Privilege" suffix
     lea rdx, privSuffix
     mov rcx, rdi
-    call wcscat_t
+    call wcscat_p
 
     mov rax, rdi                ; Return output buffer pointer
 
@@ -402,18 +348,13 @@ GetProcessIdByName proc frame
 
 gp_loop:
     ; Compare process name (szExeFile is at offset 44 in PROCESSENTRY32W)
-    lea rsi, [rsp+40+44]        ; RSI = current process name
-    mov rdi, r12                ; RDI = target process name
-gp_cmp:
-    mov ax, word ptr [rsi]      ; Read character from current process
-    mov dx, word ptr [rdi]      ; Read character from target
-    cmp ax, dx
-    jne gp_next                 ; Names don't match
-    test ax, ax                 ; Check for null terminator
-    jz gp_match                 ; Match found
-    add rsi, 2
-    add rdi, 2
-    jmp gp_cmp
+    lea rcx, [rsp+40+44]        ; RCX = current process name
+    mov rdx, r12                ; RDX = target process name
+    sub rsp, 32
+    call wcscmp_ci
+    add rsp, 32
+    test eax, eax
+    jnz gp_match                ; Match found
 
 gp_next:
     ; Get next process entry
@@ -508,8 +449,13 @@ ImpersonateSystem proc frame
     call EnablePrivilege
     ; Continue even if this fails (might already be enabled)
 
+    ; Decrypt winlogon.exe process name
+    lea rcx, str_winlogon_enc
+    lea rdx, g_decryptBuf
+    call DecryptWideStr
+
     ; Find winlogon.exe process
-    lea rcx, str_winlogon
+    lea rcx, g_decryptBuf
     call GetProcessIdByName
     test eax, eax
     jz is_fail                  ; winlogon.exe not found
@@ -686,14 +632,19 @@ StartTIService proc frame
     jz ss_fail                  ; Failed to open SCM
     mov rbx, rax                ; RBX = SCM handle
 
+    ; Decrypt TrustedInstaller service name
+    lea rcx, str_tiSvcName_enc
+    lea rdx, g_decryptBuf
+    call DecryptWideStr
+
     ; Open TrustedInstaller service
     ; SC_HANDLE OpenServiceW(
     ;   [in] SC_HANDLE hSCManager,           -> rbx
-    ;   [in] LPCWSTR   lpServiceName,        -> str_tiSvcName
+    ;   [in] LPCWSTR   lpServiceName,        -> g_decryptBuf
     ;   [in] DWORD     dwDesiredAccess       -> SERVICE_QS (query + start)
     ; )
     mov r8d, SERVICE_QS         ; R8 = query status + start access
-    lea rdx, str_tiSvcName
+    lea rdx, g_decryptBuf
     mov rcx, rbx
     sub rsp, 32
     call OpenServiceW

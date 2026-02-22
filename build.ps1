@@ -28,7 +28,7 @@ if (-not (Test-Path $BinDir)) {
 }
 
 $FILES = @("main", "token", "process", "window")
-$LIBS = @("kernel32.lib", "user32.lib", "advapi32.lib", "shlwapi.lib", "shell32.lib", "gdi32.lib", "comdlg32.lib", "userenv.lib", "ole32.lib")
+$LIBS = @("kernel32.lib", "user32.lib", "advapi32.lib", "shlwapi.lib", "shell32.lib", "gdi32.lib", "comdlg32.lib", "userenv.lib", "ole32.lib", "dwmapi.lib", "OleAut32.lib")
 $BuildSuccess = $true
 
 Write-Host ""
@@ -48,7 +48,7 @@ if ($LASTEXITCODE -ne 0) {
         }
     }
     if ($BuildSuccess) {
-        $linkArgs = @("x86\main.obj", "x86\token.obj", "x86\process.obj", "x86\window.obj", "cmdt_x86.res", "/subsystem:windows", "/entry:start@0", "/out:bin\cmdt_x86.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH32_UM", "/LIBPATH:$LIBPATH32_UCRT") + $LIBS
+        $linkArgs = @("x86\main.obj", "x86\token.obj", "x86\process.obj", "x86\window.obj", "cmdt_x86.res", "/subsystem:windows", "/entry:start@0", "/Brepro", "/out:bin\cmdt_x86.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH32_UM", "/LIBPATH:$LIBPATH32_UCRT") + $LIBS
         & $LINK32 $linkArgs
         if ($LASTEXITCODE -ne 0) { 
             $BuildSuccess = $false 
@@ -93,7 +93,7 @@ if ($LASTEXITCODE -ne 0) {
         }
     }
     if ($x64success) {
-        $linkArgs = @("x64\main.obj", "x64\token.obj", "x64\process.obj", "x64\window.obj", "cmdt_x64.res", "/subsystem:windows", "/entry:mainCRTStartup", "/out:bin\cmdt_x64.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH64_UM", "/LIBPATH:$LIBPATH64_UCRT") + $LIBS
+        $linkArgs = @("x64\main.obj", "x64\token.obj", "x64\process.obj", "x64\window.obj", "cmdt_x64.res", "/subsystem:windows", "/entry:mainCRTStartup", "/Brepro", "/out:bin\cmdt_x64.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH64_UM", "/LIBPATH:$LIBPATH64_UCRT") + $LIBS
         & $LINK64 $linkArgs
         if ($LASTEXITCODE -ne 0) { 
             $BuildSuccess = $false 

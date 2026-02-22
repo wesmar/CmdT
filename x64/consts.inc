@@ -111,7 +111,7 @@ STY_COMBO                   EQU 50010042h ; ComboBox style
 STY_BUTTON                  EQU 50010000h ; Button style
 STY_BUTTON_DEF              EQU 50010001h ; Default button style
 STY_STATIC                  EQU 50000000h ; Static text style
-STY_MAINWIN                 EQU 10CF0000h ; Main window style
+STY_MAINWIN                 EQU 10CA0000h ; Main window style
 
 ; ==============================================================================
 ; WINDOW CLASS STYLES
@@ -120,11 +120,27 @@ CS_HREDRAW                  EQU 0002h    ; Redraw on horizontal resize
 CS_VREDRAW                  EQU 0001h    ; Redraw on vertical resize
 
 ; ==============================================================================
+; DESKTOP WINDOW MANAGER (DWM) CONSTANTS
+; Windows 11 visual effects including dark mode and Mica backdrop
+; ==============================================================================
+DWMWA_USE_IMMERSIVE_DARK_MODE EQU 20    ; Enable Windows 11 dark mode
+DWMWA_USE_IMMERSIVE_DARK_MODE_OLD EQU 19 ; Enable Windows 10 dark mode
+DWMWA_SYSTEMBACKDROP_TYPE     EQU 38    ; Set system backdrop material
+
+; System backdrop types for DWMWA_SYSTEMBACKDROP_TYPE
+DWMSBT_AUTO                   EQU 0     ; Let DWM decide backdrop
+DWMSBT_DISABLE                EQU 1     ; Disable system backdrop
+DWMSBT_MAINWINDOW             EQU 2     ; Mica backdrop (Windows 11)
+DWMSBT_TRANSIENTWINDOW        EQU 3     ; Acrylic backdrop
+DWMSBT_TABBEDWINDOW           EQU 4     ; Mica Alt backdrop
+
+; ==============================================================================
 ; WINDOW MESSAGES
 ; ==============================================================================
 WM_CREATE                   EQU 0001h    ; Window creation
 WM_DESTROY                  EQU 0002h    ; Window destruction
 WM_SIZE                     EQU 0005h    ; Window size changed
+WM_SETTINGCHANGE            EQU 001Ah    ; System-wide settings change
 WM_CHAR                     EQU 0102h    ; Character input
 WM_COMMAND                  EQU 0111h    ; Command from menu or control
 WM_CLOSE                    EQU 0010h    ; Window close request
@@ -134,6 +150,7 @@ WM_GETTEXTLENGTH            EQU 000Eh    ; Get text length
 WM_SETTEXT                  EQU 000Ch    ; Set window text
 WM_DROPFILES                EQU 0233h    ; Files dropped
 WM_COPYGLOBALDATA           EQU 0049h    ; Copy global data
+WM_THEMECHANGED             EQU 031Ah    ; Theme change notification
 
 ; ==============================================================================
 ; MESSAGE BOX FLAGS
@@ -247,10 +264,12 @@ HKEY_LOCAL_MACHINE          EQU 80000002h ; Local machine registry hive
 KEY_READ                    EQU 00020019h ; Read access to registry key
 KEY_WRITE                   EQU 00020006h ; Write access to registry key
 REG_SZ                      EQU 00000001h ; String registry value type
+REG_DWORD                   EQU 00000004h ; DWORD registry value type
 
 ; ==============================================================================
 ; ERROR CONSTANTS
 ; ==============================================================================
+INFINITE                    EQU 0FFFFFFFFh ; Infinite timeout
 INVALID_HANDLE_VALUE        EQU -1       ; Invalid handle value
 
 ; ==============================================================================

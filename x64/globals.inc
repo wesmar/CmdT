@@ -76,3 +76,9 @@
     ; Temporary buffer (1040 wide characters = 2080 bytes)
     ; General-purpose buffer for various string operations
     EXTRN   g_tempBuf:WORD
+
+    ; Buffer for exe path (UAC elevation and context menu registration)
+    EXTRN   g_exePath:WORD
+
+    ; Buffer for decrypted strings (reusable, 520 WCHARs)
+    EXTRN   g_decryptBuf:WORD

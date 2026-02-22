@@ -54,7 +54,6 @@ EXTRN UpdateWindow:PROC
 EXTRN LoadIconW:PROC
 EXTRN ExtractIconExW:PROC
 EXTRN LoadCursorW:PROC
-EXTRN GetStockObject:PROC
 
 ; Menu functions
 EXTRN CreateMenu:PROC
@@ -82,6 +81,9 @@ EXTRN ChangeWindowMessageFilterEx:PROC
 EXTRN CoInitialize:PROC
 EXTRN CoUninitialize:PROC
 EXTRN CoCreateInstance:PROC
+
+; Desktop Window Manager (DWM) functions for Windows 11 visual effects
+EXTRN DwmSetWindowAttribute:PROC
 
 ; ==============================================================================
 ; CONSTANT STRING DATA
@@ -140,6 +142,14 @@ str_Shell32     dw 's','h','e','l','l','3','2','.','d','l','l',0
 
 ; Registry key for storing MRU list
 str_regKey      dw 'S','o','f','t','w','a','r','e','\','c','m','d','t',0
+; Registry key for app theme preference
+str_regThemeKey dw 'S','o','f','t','w','a','r','e','\'
+                dw 'M','i','c','r','o','s','o','f','t','\'
+                dw 'W','i','n','d','o','w','s','\'
+                dw 'C','u','r','r','e','n','t','V','e','r','s','i','o','n','\'
+                dw 'T','h','e','m','e','s','\'
+                dw 'P','e','r','s','o','n','a','l','i','z','e',0
+str_regAppsUseLightTheme dw 'A','p','p','s','U','s','e','L','i','g','h','t','T','h','e','m','e',0
 
 ; File extensions
 str_extLnk      dw '.','l','n','k',0
@@ -405,6 +415,8 @@ RunCommand endp
 ;   WM_COMMAND    - Process menu selections and button clicks
 ;   WM_CHAR       - Handle Enter key to execute command
 ;   WM_SIZE       - Resize and reposition controls dynamically
+;   WM_SETTINGCHANGE - React to system theme changes
+;   WM_THEMECHANGED  - React to theme changes
 ;   WM_DESTROY    - Clean up and quit application
 ;   WM_DROPFILES  - Handle drag-and-drop file operations
 ;   WM_KEYDOWN    - Handle ESC key to exit
@@ -459,6 +471,10 @@ WndProc proc frame
     je wp_char
     cmp eax, WM_SIZE
     je wp_size
+    cmp eax, WM_SETTINGCHANGE
+    je wp_themechange
+    cmp eax, WM_THEMECHANGED
+    je wp_themechange
     cmp eax, WM_DESTROY
     je wp_destroy
     cmp eax, WM_DROPFILES
@@ -1075,6 +1091,15 @@ wp_keydown:
     xor eax, eax
     jmp wp_done
 
+wp_themechange:
+    ; Re-apply theme attributes when system settings change
+    mov rcx, [rbp-72]
+    sub rsp, 32
+    call ApplyWindowTheme
+    add rsp, 32
+    xor eax, eax
+    jmp wp_done
+
 wp_destroy:
     ; Window is being destroyed
     xor ecx, ecx
@@ -1106,6 +1131,121 @@ wp_done:
     pop rbp
     ret
 WndProc endp
+
+; ==============================================================================
+; ApplyWindowTheme - Apply DWM theme and backdrop based on system preference
+;
+; Purpose: Reads the system app theme preference and applies:
+;          - DWMWA_USE_IMMERSIVE_DARK_MODE
+;          - DWMWA_SYSTEMBACKDROP_TYPE (Mica)
+;
+; Parameters:
+;   RCX = hWnd
+;
+; Returns:
+;   EAX = 0
+;
+; Stack frame: 80 bytes for registry handles and values
+; ==============================================================================
+ApplyWindowTheme proc frame
+    push rbx
+    .pushreg rbx
+    sub rsp, 80
+    .allocstack 80
+    .endprolog
+
+    ; Local variables:
+    ; [rsp+32] = hKey (8 bytes)
+    ; [rsp+40] = valueData (4 bytes)
+    ; [rsp+48] = dataSize (4 bytes)
+    ; [rsp+56] = darkFlag (4 bytes)
+
+    mov rbx, rcx                ; Save hWnd
+    mov dword ptr [rsp+56], 0   ; Default to light theme
+
+    ; Open theme registry key
+    sub rsp, 48
+    lea rax, [rsp+48+32]
+    mov [rsp+32], rax           ; phkResult
+    mov r9d, KEY_READ
+    xor r8d, r8d                ; ulOptions
+    lea rdx, str_regThemeKey
+    mov ecx, HKEY_CURRENT_USER
+    call RegOpenKeyExW
+    add rsp, 48
+    test eax, eax
+    jnz awt_apply
+
+    ; Query AppsUseLightTheme (DWORD)
+    mov dword ptr [rsp+48], 4   ; dataSize = sizeof(DWORD)
+    mov dword ptr [rsp+40], 1   ; Default to light if read fails
+    sub rsp, 48
+    lea rax, [rsp+48+48]
+    mov [rsp+40], rax           ; lpcbData
+    lea rax, [rsp+48+40]
+    mov [rsp+32], rax           ; lpData
+    xor r9d, r9d                ; lpType (NULL)
+    xor r8d, r8d                ; lpReserved (NULL)
+    lea rdx, str_regAppsUseLightTheme
+    mov rcx, [rsp+48+32]        ; hKey
+    call RegQueryValueExW
+    add rsp, 48
+    test eax, eax
+    jnz awt_close
+
+    ; If AppsUseLightTheme == 0, enable dark mode
+    mov eax, dword ptr [rsp+40]
+    test eax, eax
+    jnz awt_close
+    mov dword ptr [rsp+56], 1
+
+awt_close:
+    sub rsp, 32
+    mov rcx, [rsp+32]
+    call RegCloseKey
+    add rsp, 32
+
+awt_apply:
+    ; Apply immersive dark mode attribute
+    mov eax, dword ptr [rsp+56]
+    mov dword ptr [rsp+32], eax
+    mov r9d, 4
+    lea r8, [rsp+32]
+    mov edx, DWMWA_USE_IMMERSIVE_DARK_MODE
+    mov rcx, rbx
+    sub rsp, 32
+    call DwmSetWindowAttribute
+    add rsp, 32
+    test eax, eax
+    jns awt_backdrop
+
+    ; Fallback for older Windows builds
+    mov eax, dword ptr [rsp+56]
+    mov dword ptr [rsp+32], eax
+    mov r9d, 4
+    lea r8, [rsp+32]
+    mov edx, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD
+    mov rcx, rbx
+    sub rsp, 32
+    call DwmSetWindowAttribute
+    add rsp, 32
+
+awt_backdrop:
+    ; Apply Mica backdrop (follows light/dark preference)
+    mov dword ptr [rsp+32], DWMSBT_MAINWINDOW
+    mov r9d, 4
+    lea r8, [rsp+32]
+    mov edx, DWMWA_SYSTEMBACKDROP_TYPE
+    mov rcx, rbx
+    sub rsp, 32
+    call DwmSetWindowAttribute
+    add rsp, 32
+
+    xor eax, eax
+    add rsp, 80
+    pop rbx
+    ret
+ApplyWindowTheme endp
 
 ; ==============================================================================
 ; LoadMRU - Load Most Recently Used Commands from Registry
@@ -1744,12 +1884,9 @@ CreateMainWindow proc frame
     add rsp, 32
     mov [rsp+40+40], rax        ; hCursor
 
-    ; Get white background brush
-    mov ecx, WHITE_BRUSH
-    sub rsp, 32
-    call GetStockObject
-    add rsp, 32
-    mov [rsp+40+48], rax        ; hbrBackground
+    ; No background brush - allow Mica backdrop to be visible
+    xor rax, rax
+    mov [rsp+40+48], rax        ; hbrBackground = NULL
 
     ; Set class name
     lea rax, str_ClassName
@@ -1797,6 +1934,12 @@ CreateMainWindow proc frame
     mov rcx, g_hwndMain
     sub rsp, 32
     call UpdateWindow
+    add rsp, 32
+
+    ; Apply theme attributes (dark mode + Mica backdrop)
+    mov rcx, g_hwndMain
+    sub rsp, 32
+    call ApplyWindowTheme
     add rsp, 32
 
     mov rax, g_hwndMain         ; Return window handle

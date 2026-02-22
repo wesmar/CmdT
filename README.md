@@ -6,7 +6,7 @@
 
 CMDT launches any process under the **NT SERVICE\TrustedInstaller** security context — the highest privilege level in Windows, above both Administrator and SYSTEM. It enables all 34 Windows security privileges in the spawned process token, giving unrestricted access to every protected resource on the system.
 
-The entire tool compiles to **under 25 KB** (x64) and **under 20 KB** (x86). No C runtime. No frameworks. No external dependencies beyond the Windows kernel and a handful of system DLLs that ship with every Windows installation since Vista.
+The entire tool compiles to **under 30 KB** (x64) and **under 20 KB** (x86). No C runtime. No frameworks. No external dependencies beyond the Windows kernel and a handful of system DLLs that ship with every Windows installation since Vista.
 
 ---
 
@@ -35,10 +35,10 @@ Both architectures — **x86 (IA-32)** and **x64 (AMD64)** — are built from se
 
 | Binary | Size | Architecture |
 |---|---|---|
-| `cmdt_x64.exe` | **under 25 KB** | x64 / AMD64 |
+| `cmdt_x64.exe` | **under 30 KB** | x64 / AMD64 |
 | `cmdt_x86.exe` | **under 20 KB** | x86 / IA-32 |
 
-For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in under 25 KB. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
+For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in under 30 KB. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
 
 ---
 
@@ -48,7 +48,7 @@ For comparison, equivalent tools written in C++ or C# typically weigh in at 50�
 - **UAC self-elevation** — automatically prompts for admin rights via `ShellExecuteEx("runas")` if not already elevated, forwarding all original command-line arguments to the elevated instance
 - **Explorer context menu integration** — `cmdt -install` registers right-click entries for directories, executables, and shortcuts; `cmdt -uninstall` removes them (see [Context Menu Integration](#context-menu-integration))
 - **Sticky Keys IFEO hook** — `cmdt -shift` installs an Image File Execution Options debugger redirect for `sethc.exe`, so pressing Shift 5 times at the login screen opens a TrustedInstaller command prompt instead of Sticky Keys; `cmdt -unshift` reverts to default behavior (see [Sticky Keys IFEO Hook](#sticky-keys-ifeo-hook))
-- **Windows Defender exclusions** — `-shift` and `-unshift` automatically add or remove process exclusions for the CMDT binary and `cmd.exe` via `Add-MpPreference` / `Remove-MpPreference`, preventing false-positive interference
+- **Windows Defender exclusions** — `-shift` and `-unshift` automatically add or remove process exclusions for the CMDT binary and `cmd.exe` via WMI (`MSFT_MpPreference` COM interface, `ROOT\Microsoft\Windows\Defender` namespace), preventing false-positive interference without spawning a PowerShell process
 - **CLI help** — passing an unknown switch (e.g. `cmdt -help`) prints all available options to the parent console via `AttachConsole` + `WriteConsoleW`
 - **All 34 security privileges** enabled in the spawned token (see [Privilege Composition](#privilege-composition))
 - **Token caching** — 30-second TTL avoids redundant privilege escalation on repeated runs
@@ -56,6 +56,8 @@ For comparison, equivalent tools written in C++ or C# typically weigh in at 50�
 - **Windows shortcut (.lnk) resolution** — via COM (`IShellLinkW` + `IPersistFile`), both path and arguments
 - **Drag-and-drop** with UIPI bypass — accepts drops from non-elevated Explorer windows
 - **DPI-aware** — PerMonitorV2 via application manifest, sharp rendering on mixed-DPI setups
+- **Dark mode support** — reads `AppsUseLightTheme` from the registry and applies `DWMWA_USE_IMMERSIVE_DARK_MODE` via `DwmSetWindowAttribute`; title bar updates instantly on `WM_SETTINGCHANGE` without restarting
+- **Mica backdrop** — `DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_MAINWINDOW` on Windows 11; the window background is transparent to the Mica layer (no background brush)
 - **Modern visual styles** — Common Controls v6 through SxS manifest dependency
 - **Resilient service startup** — retry loop with up to 2-second backoff when TrustedInstaller service is cold
 - **I/O handle inheritance** — CLI mode preserves stdin/stdout/stderr for piping and redirection
@@ -263,12 +265,12 @@ This provides a **pre-login recovery console** with the highest privilege level 
 
 Both `-shift` and `-unshift` manage Windows Defender process exclusions automatically. This prevents Defender from flagging CMDT or the spawned `cmd.exe` as suspicious during the IFEO-redirected launch at the login screen, where no user session exists to dismiss alerts.
 
-| Switch | PowerShell command executed |
+| Switch | Action |
 |---|---|
-| `-shift` | `Add-MpPreference -ExclusionProcess <filename>,cmd.exe -Force` |
-| `-unshift` | `Remove-MpPreference -ExclusionProcess <filename>,cmd.exe -Force` |
+| `-shift` | Adds `<filename>` and `cmd.exe` as process exclusions via WMI |
+| `-unshift` | Removes `<filename>` and `cmd.exe` process exclusions via WMI |
 
-The commands run via a hidden `ShellExecuteExW` call to `powershell.exe` with `-NoProfile`, waited to completion before the process exits.
+Exclusions are managed by calling the `MSFT_MpPreference` WMI class methods (`Add` / `Remove`) directly through the COM interface — no PowerShell or child process is spawned. CMDT connects to the `ROOT\Microsoft\Windows\Defender` WMI namespace, instantiates `IWbemServices`, and invokes `ExecMethod` with a `SAFEARRAY` of `BSTR` values for the `ExclusionProcess` property. This approach is faster, produces no visible console window, and has no dependency on the PowerShell execution policy.
 
 ### Removal
 
@@ -299,7 +301,7 @@ These are available because the process runs as Administrator (elevated).
 
 ### Stage 2: SYSTEM Impersonation
 
-CMDT locates `winlogon.exe` by enumerating the process list via `CreateToolhelp32Snapshot` + `Process32FirstW/NextW`. The `winlogon.exe` process runs as `NT AUTHORITY\SYSTEM`.
+CMDT locates `winlogon.exe` by enumerating the process list via `CreateToolhelp32Snapshot` + `Process32FirstW/NextW`, using a case-insensitive wide-character comparison (`wcscmp_ci`) against each entry's `szExeFile` field. The `winlogon.exe` process runs as `NT AUTHORITY\SYSTEM`.
 
 The tool opens `winlogon.exe` with `PROCESS_QUERY_INFORMATION | PROCESS_DUP_HANDLE`, extracts its process token with `OpenProcessToken`, and duplicates it with `DuplicateTokenEx` at `MAXIMUM_ALLOWED` access and `SecurityImpersonation` level. It then calls `ImpersonateLoggedOnUser` to assume SYSTEM identity on the current thread.
 
@@ -410,7 +412,28 @@ This is the same DPI awareness model used by modern Windows applications like Ex
 
 The manifest declares a Side-by-Side (SxS) dependency on `Microsoft.Windows.Common-Controls` version 6.0. This activates the modern visual theme for all standard controls — the ComboBox dropdown, buttons, and static labels render with the current Windows theme (Fluent, Aero, or Classic) rather than the legacy Win95 appearance.
 
-### Execution Level
+### Dark Mode and Mica Backdrop
+
+CMDT reads the system app theme preference from the registry at startup and whenever the user changes the Windows color scheme:
+
+```
+HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize
+  AppsUseLightTheme (DWORD) — 0 = dark, 1 = light
+```
+
+Depending on the value, it calls `DwmSetWindowAttribute` with two attributes:
+
+| Attribute | Value | Effect |
+|---|---|---|
+| `DWMWA_USE_IMMERSIVE_DARK_MODE` (20) | 0 or 1 | Dark or light title bar and window frame |
+| `DWMWA_USE_IMMERSIVE_DARK_MODE_OLD` (19) | same | Fallback for Windows 10 builds before 20H1 |
+| `DWMWA_SYSTEMBACKDROP_TYPE` (38) | `DWMSBT_MAINWINDOW` (2) | Mica material backdrop |
+
+The Mica backdrop (`DWMSBT_MAINWINDOW`) applies on Windows 11 regardless of light/dark mode — the material automatically adapts its tint to the system accent color and theme. The window class is registered with no background brush (`hbrBackground = NULL`), leaving the client area transparent to the Mica layer.
+
+CMDT also listens for `WM_SETTINGCHANGE` and `WM_THEMECHANGED` and re-applies both attributes on every theme change. Switching between light and dark mode in Windows Settings updates the CMDT title bar immediately without restarting the application.
+
+
 
 The manifest specifies `requestedExecutionLevel=asInvoker`. CMDT does not rely on the manifest for elevation — instead, it programmatically checks `IsUserAnAdmin()` at startup and re-launches itself via `ShellExecuteExW("runas")` if not elevated. This approach allows the same binary to be invoked silently from already-elevated contexts (scripts, scheduled tasks, elevated terminals) without triggering a redundant UAC prompt, while still self-elevating when launched from a standard user session.
 
@@ -479,7 +502,7 @@ cmdt_asm/
 │   ├── consts.inc
 │   └── globals.inc
 ├── bin/                    # Compiled binaries
-│   ├── cmdt_x64.exe        # 64-bit binary (<25 KB)
+│   ├── cmdt_x64.exe        # 64-bit binary (<30 KB)
 │   └── cmdt_x86.exe        # 32-bit binary (<20 KB)
 ├── cmdt.rc                 # Version info resource
 ├── cmdt.manifest           # Application manifest (DPI, visual styles, execution level)
@@ -497,13 +520,13 @@ CMDT implements all necessary string operations as hand-written wide-character (
 
 | Function | Purpose |
 |---|---|
-| `wcscpy_p` / `wcscpy_t` | Wide string copy |
-| `wcscat_p` / `wcscat_w` | Wide string concatenation |
-| `wcscmp_ci` / `wcscmp_ci_w` | Case-insensitive wide string comparison |
-| `wcslen_p` / `wcslen_w` | Wide string length |
+| `wcscpy_p` | Wide string copy |
+| `wcscat_p` | Wide string concatenation |
+| `wcscmp_ci` | Case-insensitive wide string comparison |
+| `wcslen_p` | Wide string length |
 | `skip_spaces` | Skip leading whitespace in command parsing |
 
-The `_p` / `_t` variants live in `main.asm` and `token.asm` respectively; the `_w` variants live in `window.asm`. Each is a tight loop operating on 16-bit words, with inline ASCII case folding for the comparison functions (uppercase A–Z folded to lowercase by adding 32 to the code point).
+`wcscpy_p`, `wcscat_p`, and `wcscmp_ci` are defined once in `main.asm` and shared with `token.asm` via `EXTRN` declarations. The `_w` variants of these functions live in `window.asm` for the GUI subsystem. Each is a tight loop operating on 16-bit words, with inline ASCII case folding for the comparison functions (uppercase A–Z folded to lowercase by adding 32 to the code point).
 
 ---
 
@@ -570,7 +593,7 @@ During early development, the minimal proof-of-concept builds were significantly
 | CLI-only (no GUI, no registry, no manifest) | **4 KB** | Bare token acquisition + `CreateProcessWithTokenW` |
 | Hybrid GUI/CLI (no registry, no manifest) | **6 KB** | Added window creation, MRU, drag-and-drop |
 | Current full build (x86) | **<20 KB** | Hybrid mode, context menu, UAC self-elevation, manifest, COM `.lnk` resolution |
-| Current full build (x64) | **<25 KB** | Same feature set, 64-bit calling convention overhead |
+| Current full build (x64) | **<30 KB** | Same feature set, 64-bit calling convention overhead |
 
 The growth from 4–6 KB to the current size is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, the Sticky Keys IFEO hook with Defender exclusion management, UAC self-elevation, and the wide-character string constants for registry paths and UI text. The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
 

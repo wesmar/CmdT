@@ -62,8 +62,14 @@ str_regKey      dw 'S','o','f','t','w','a','r','e','\','c','m','d','t',0
 ; Command-line switch for CLI mode
 str_cliSwitch1  dw '-','c','l','i',0           ; CLI mode switch
 
-; Command-line switch for help/usage
-str_helpSwitch  dw '-','h','e','l','p',0        ; Display usage and exit
+; Command-line switches for help/usage
+str_helpSwitch      dw '-','h','e','l','p',0    ; Display usage and exit
+str_helpSwitchH     dw '-','h',0
+str_helpSwitchDD    dw '-','-','h','e','l','p',0
+str_helpSwitchQ     dw '-','?',0
+str_helpSwitchSQ    dw '/','?',0
+str_helpSwitchSH    dw '/','h',0
+str_helpSwitchSHELP dw '/','h','e','l','p',0
 
 ; Switch to request new console window
 str_newSwitch   dw '-','n','e','w',0
@@ -187,8 +193,8 @@ str_usage       dw 13,10
                 dw ' ',' ','-','u','n','s','h','i','f','t'
                 dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
                 dw 'U','n','h','o','o','k',' ','s','e','t','h','c','.','e','x','e',13,10
-                dw ' ',' ','-','h','e','l','p'
-                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
+                dw ' ',' ','-','h','e','l','p',',',' ','-','h',',',' ','-','-','h','e','l','p',',',' ','-','?',',',' ','/','?'
+                dw ' ',' '
                 dw 'S','h','o','w',' ','t','h','i','s',' ','h','e','l','p',13,10
                 dw 13,10
                 dw ' ',' ','N','o',' ','a','r','g','s',' ','t','o',' ','s','t','a','r','t',' ','G','U','I','.',13,10
@@ -587,6 +593,81 @@ mainCRTStartup proc frame
 
     cld                         ; Clear direction flag for string operations
 
+    ; ===== Early help-switch check (runs BEFORE UAC self-elevation) =====
+    ; Reason: UAC self-elevation spawns a new process detached from the
+    ; original shell, so stdout redirect (`cmdt -help >out.txt`) and
+    ; AttachConsole(ATTACH_PARENT_PROCESS) cannot reach the original cmd.
+    ; By printing usage from the non-elevated process we stay attached to
+    ; the launching console.
+    sub rsp, 32
+    call GetCommandLineW
+    add rsp, 32
+    mov r12, rax
+
+    lea rdx, [rbp-64]
+    mov rcx, r12
+    sub rsp, 32
+    call CommandLineToArgvW
+    add rsp, 32
+    mov r13, rax
+    test rax, rax
+    jz early_help_skip
+
+    mov eax, dword ptr [rbp-64]
+    cmp eax, 2
+    jl early_help_free
+
+    mov r14, [r13+8]            ; argv[1]
+
+    lea rdx, str_helpSwitch
+    mov rcx, r14
+    call wcscmp_ci
+    test rax, rax
+    jnz show_usage
+
+    lea rdx, str_helpSwitchH
+    mov rcx, r14
+    call wcscmp_ci
+    test rax, rax
+    jnz show_usage
+
+    lea rdx, str_helpSwitchDD
+    mov rcx, r14
+    call wcscmp_ci
+    test rax, rax
+    jnz show_usage
+
+    lea rdx, str_helpSwitchQ
+    mov rcx, r14
+    call wcscmp_ci
+    test rax, rax
+    jnz show_usage
+
+    lea rdx, str_helpSwitchSQ
+    mov rcx, r14
+    call wcscmp_ci
+    test rax, rax
+    jnz show_usage
+
+    lea rdx, str_helpSwitchSH
+    mov rcx, r14
+    call wcscmp_ci
+    test rax, rax
+    jnz show_usage
+
+    lea rdx, str_helpSwitchSHELP
+    mov rcx, r14
+    call wcscmp_ci
+    test rax, rax
+    jnz show_usage
+
+early_help_free:
+    mov rcx, r13
+    sub rsp, 32
+    call LocalFree
+    add rsp, 32
+
+early_help_skip:
     ; Check if running as administrator
     sub rsp, 32
     call IsUserAnAdmin

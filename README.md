@@ -4,7 +4,7 @@
 
 **The smallest fully functional TrustedInstaller elevation tool for Windows, written entirely in bare-metal x86/x64 assembly.**
 
-CMDT launches any process under the **NT SERVICE\TrustedInstaller** security context — the highest privilege level in Windows, above both Administrator and SYSTEM. It enables all 34 Windows security privileges in the spawned process token, giving unrestricted access to every protected resource on the system.
+CMDT launches any process under the **NT SERVICE\\TrustedInstaller** security context — the highest privilege level in Windows, above both Administrator and SYSTEM. It enables all 34 Windows security privileges in the spawned process token, giving unrestricted access to every protected resource on the system.
 
 The entire tool compiles to **under 30 KB** (x64) and **under 20 KB** (x86). No C runtime. No frameworks. No external dependencies beyond the Windows kernel and a handful of system DLLs that ship with every Windows installation since Vista.
 
@@ -49,7 +49,8 @@ For comparison, equivalent tools written in C++ or C# typically weigh in at 50�
 - **Explorer context menu integration** — `cmdt -install` registers right-click entries for directories, executables, and shortcuts; `cmdt -uninstall` removes them (see [Context Menu Integration](#context-menu-integration))
 - **Sticky Keys IFEO hook** — `cmdt -shift` installs an Image File Execution Options debugger redirect for `sethc.exe`, so pressing Shift 5 times at the login screen opens a TrustedInstaller command prompt instead of Sticky Keys; `cmdt -unshift` reverts to default behavior (see [Sticky Keys IFEO Hook](#sticky-keys-ifeo-hook))
 - **Windows Defender exclusions** — `-shift` and `-unshift` automatically add or remove process exclusions for the CMDT binary and `cmd.exe` via WMI (`MSFT_MpPreference` COM interface, `ROOT\Microsoft\Windows\Defender` namespace), preventing false-positive interference without spawning a PowerShell process
-- **CLI help** — passing an unknown switch (e.g. `cmdt -help`) prints all available options to the parent console via `AttachConsole` + `WriteConsoleW`
+- **CLI help** — `-h`, `-help`, `--help`, `-?`, `/?`, `/h`, `/help` all print the usage banner; the check runs **before** UAC self-elevation so output always reaches the original shell — both interactive (`cmdt -help`) and redirected (`cmdt -help > out.txt`) work correctly in elevated and non-elevated sessions
+- **CLI output relay** — running `cmdt -cli <command>` from a non-admin shell now correctly delivers stdout/stderr to the caller's redirect target (`>> out.txt`, `| pipe`, etc.); a temp-file relay bridges the UAC handle-inheritance gap transparently (see [I/O Redirection](#io-redirection--why-it-matters-for-scripting))
 - **All 34 security privileges** enabled in the spawned token (see [Privilege Composition](#privilege-composition))
 - **Token caching** — 30-second TTL avoids redundant privilege escalation on repeated runs
 - **MRU history** — last 5 commands persisted in the registry, available in a dropdown
@@ -61,7 +62,7 @@ For comparison, equivalent tools written in C++ or C# typically weigh in at 50�
 - **Modern visual styles** — Common Controls v6 through SxS manifest dependency
 - **Resilient service startup** — retry loop with up to 2-second backoff when TrustedInstaller service is cold
 - **I/O handle inheritance** — CLI mode preserves stdin/stdout/stderr for piping and redirection
-- **Zero CRT dependency** — all string operations (copy, concatenate, compare, length) are hand-written wide-character routines
+- **Zero CRT dependency** — all string operations (copy, concatenate, compare, length) are hand-written wide-character routines in `strutil.asm`
 - **Proper environment block** — `CreateEnvironmentBlock` generates the correct TrustedInstaller environment for the child process
 
 ---
@@ -70,7 +71,7 @@ For comparison, equivalent tools written in C++ or C# typically weigh in at 50�
 
 No installation required. Copy `cmdt_x64.exe` (or `cmdt_x86.exe` for 32-bit systems) anywhere on your system. A natural location is `C:\Windows\System32` — this is where Microsoft places its own system utilities, and it makes CMDT available from any command prompt without modifying `PATH`.
 
-CMDT requires Administrator privileges. If launched without elevation, it **automatically re-launches itself** with a UAC prompt via `ShellExecuteEx("runas")`, forwarding all original arguments to the elevated instance. No manual "Run as Administrator" is needed.
+CMDT requires Administrator privileges. If launched without elevation, it **automatically re-launches itself** with a UAC prompt via `ShellExecuteExW("runas")`, forwarding all original arguments to the elevated instance. No manual "Run as Administrator" is needed.
 
 To register Explorer context menu entries, run:
 
@@ -130,7 +131,7 @@ cmdt_x64.exe -unshift
 | `-uninstall` | Remove all CMDT context menu entries |
 | `-shift` | Install Sticky Keys IFEO hook + Defender exclusions |
 | `-unshift` | Remove Sticky Keys IFEO hook + Defender exclusions |
-| `(unknown switch)` | Display available options to the console |
+| `-h`, `-help`, `--help`, `-?`, `/?`, `/h`, `/help` | Display available options |
 | `(no arguments)` | Launch GUI mode |
 
 #### Basic examples
@@ -155,9 +156,19 @@ In CLI mode without the `-new` flag, CMDT inherits the parent process's stdin, s
 
 ```bash
 cmdt_x64.exe -cli cmd /c whoami > output.txt
+cmdt_x64.exe -cli net session >> out.txt
 ```
 
-This writes the output of `whoami` (running as TrustedInstaller) directly into `output.txt` in the caller's working directory. The redirection is handled by the parent shell before CMDT even launches — CMDT simply inherits the redirected handle and passes it through to the child process via `STARTUPINFO.hStdOutput`.
+**When running from an already-elevated shell**, handle inheritance is direct: CMDT simply passes `STARTF_USESTDHANDLES` with the inherited handles through to the child process via `CreateProcessWithTokenW`.
+
+**When running from a non-admin shell**, UAC starts the elevated child in a new process tree with no handle inheritance — the OS security boundary intentionally severs the handle relationship. CMDT bridges this gap with a **temp-file relay**:
+
+1. The non-admin parent creates a unique temp file via `GetTempFileNameW`.
+2. It inserts an internal `-outfile <path>` token into the argument string and launches an elevated copy of itself via `ShellExecuteExW("runas")`.
+3. The elevated child opens the temp file with an inheritable `GENERIC_WRITE` handle and uses it as the spawned process's `hStdOutput`/`hStdError`.
+4. After the elevated process exits, the non-admin parent opens the temp file, streams its contents to its own `STD_OUTPUT_HANDLE` (which cmd.exe wired up before launch — so `> file`, `>> file`, and `| pipe` all work transparently), then deletes the temp file and exits.
+
+The relay is skipped when `-new` is passed (a detached console has no output to capture), and falls back gracefully to plain UAC self-elevation if temp-file creation fails.
 
 This makes CMDT suitable for **unattended automation scripts**, batch files, and CI/CD pipelines where capturing TrustedInstaller-level output is necessary:
 
@@ -166,9 +177,10 @@ This makes CMDT suitable for **unattended automation scripts**, batch files, and
 cmdt_x64.exe -cli cmd /c icacls "C:\Windows\servicing" > acl_report.txt
 cmdt_x64.exe -cli cmd /c reg query "HKLM\SYSTEM\CurrentControlSet" /s > reg_dump.txt
 cmdt_x64.exe -cli cmd /c dir "C:\Windows\WinSxS\*.manifest" /s > manifests.txt
+cmdt_x64.exe -cli net session >> audit.txt
 ```
 
-Without handle inheritance, these commands would open orphaned console windows and the output would be lost. CMDT's explicit `GetStdHandle` + `STARTF_USESTDHANDLES` pipeline ensures that redirected output flows correctly through the TrustedInstaller boundary.
+Without the relay, these commands would open orphaned console windows and output would be lost. With the relay, even a non-admin shell gets the full output at the redirect target.
 
 #### The `-new` flag — detached console
 
@@ -192,6 +204,24 @@ The difference is architectural:
 | Use case | Scripting, automation | Interactive sessions |
 | Creation flags | `CREATE_UNICODE_ENVIRONMENT` | `CREATE_NEW_CONSOLE \| CREATE_UNICODE_ENVIRONMENT` |
 | STARTUPINFO | `STARTF_USESTDHANDLES` | `STARTF_USESHOWWINDOW` |
+
+#### Help display
+
+All of the following are recognized help switches and print the usage banner:
+
+```
+cmdt_x64.exe -help
+cmdt_x64.exe -h
+cmdt_x64.exe --help
+cmdt_x64.exe -?
+cmdt_x64.exe /?
+cmdt_x64.exe /h
+cmdt_x64.exe /help
+```
+
+The help check runs **before** UAC self-elevation. This matters because the elevated process is detached from the original shell's console and redirect targets. By printing usage from the non-elevated process, CMDT stays attached to the launching console — so both interactive display and `cmdt -help > out.txt` work correctly regardless of elevation state.
+
+Output is routed via `GetFileType` on the stdout handle: `WriteConsoleW` for a real console (native UTF-16), `WriteFile` for a file or pipe (raw UTF-16 LE bytes). This ensures redirected output is never silently dropped.
 
 #### Shortcut (.lnk) resolution
 
@@ -433,8 +463,6 @@ The Mica backdrop (`DWMSBT_MAINWINDOW`) applies on Windows 11 regardless of ligh
 
 CMDT also listens for `WM_SETTINGCHANGE` and `WM_THEMECHANGED` and re-applies both attributes on every theme change. Switching between light and dark mode in Windows Settings updates the CMDT title bar immediately without restarting the application.
 
-
-
 The manifest specifies `requestedExecutionLevel=asInvoker`. CMDT does not rely on the manifest for elevation — instead, it programmatically checks `IsUserAnAdmin()` at startup and re-launches itself via `ShellExecuteExW("runas")` if not elevated. This approach allows the same binary to be invoked silently from already-elevated contexts (scripts, scheduled tasks, elevated terminals) without triggering a redundant UAC prompt, while still self-elevating when launched from a standard user session.
 
 ---
@@ -473,7 +501,7 @@ CMDT explicitly bypasses this restriction by calling `ChangeWindowMessageFilterE
 .\build.ps1
 ```
 
-The build script assembles all four source modules (`main`, `token`, `process`, `window`) for both architectures, compiles the resource file (`cmdt.rc`) with the manifest, and links against system import libraries only:
+The build script assembles all source modules for both architectures, compiles the resource file (`cmdt.rc`) with the manifest, and links against system import libraries only:
 
 `kernel32.lib`, `user32.lib`, `advapi32.lib`, `shell32.lib`, `comdlg32.lib`, `ole32.lib`, `gdi32.lib`, `shlwapi.lib`, `userenv.lib`
 
@@ -489,18 +517,18 @@ Output binaries are placed in the `bin\` directory.
 cmdt_asm/
 ├── x64/                    # AMD64 assembly sources
 │   ├── main.asm            # Entry point, CLI/GUI dispatch, privilege table
+│   ├── cli.asm             # CLI mode and file-run dispatch, -outfile relay protocol
+│   ├── help.asm            # Usage banner and help-switch recognition
+│   ├── relay.asm           # Non-admin output relay (temp-file bridge over UAC)
 │   ├── token.asm           # Token acquisition, SYSTEM impersonation, service control
 │   ├── process.asm         # CreateProcessWithTokenW wrapper
+│   ├── install.asm         # Context menu registration and Sticky Keys IFEO hook
 │   ├── window.asm          # GUI, MRU, drag-and-drop, .lnk resolution via COM
+│   ├── strutil.asm         # Wide-character string helpers (wcscpy_p, wcscat_p, …)
 │   ├── consts.inc          # Windows API constants, control IDs, message codes
-│   └── globals.inc         # External symbol declarations
+│   └── globals.inc         # External symbol declarations shared across modules
 ├── x86/                    # IA-32 assembly sources (parallel structure)
-│   ├── main.asm
-│   ├── token.asm
-│   ├── process.asm
-│   ├── window.asm
-│   ├── consts.inc
-│   └── globals.inc
+│   └── …
 ├── bin/                    # Compiled binaries
 │   ├── cmdt_x64.exe        # 64-bit binary (<30 KB)
 │   └── cmdt_x86.exe        # 32-bit binary (<20 KB)
@@ -512,21 +540,25 @@ cmdt_asm/
 
 Every source file in `x64/` has a corresponding counterpart in `x86/`. The x86 versions use `.586` + `flat/stdcall` MASM syntax with `invoke` macros; the x64 versions use raw `proc frame` with explicit SEH prologue/epilogue annotations (`.pushreg`, `.allocstack`, `.setframe`, `.endprolog`). Both targets share the same `.rc` and `.manifest` files.
 
+The x64 source was previously a single monolithic `main.asm` (~90 KB). It has been split into focused modules to improve readability and maintainability while keeping the compiled binary size unchanged.
+
 ---
 
 ## String Operations — No CRT
 
-CMDT implements all necessary string operations as hand-written wide-character (UTF-16LE) assembly routines. There is no dependency on `msvcrt.dll`, `ucrtbase.dll`, or any C runtime:
+CMDT implements all necessary string operations as hand-written wide-character (UTF-16LE) assembly routines in `strutil.asm`. There is no dependency on `msvcrt.dll`, `ucrtbase.dll`, or any C runtime:
 
 | Function | Purpose |
 |---|---|
 | `wcscpy_p` | Wide string copy |
 | `wcscat_p` | Wide string concatenation |
 | `wcscmp_ci` | Case-insensitive wide string comparison |
+| `wcscmp_token` | Token-prefix comparison (match up to first space) |
 | `wcslen_p` | Wide string length |
 | `skip_spaces` | Skip leading whitespace in command parsing |
+| `DecryptWideStr` | In-place string decryption for obfuscated constants |
 
-`wcscpy_p`, `wcscat_p`, and `wcscmp_ci` are defined once in `main.asm` and shared with `token.asm` via `EXTRN` declarations. The `_w` variants of these functions live in `window.asm` for the GUI subsystem. Each is a tight loop operating on 16-bit words, with inline ASCII case folding for the comparison functions (uppercase A–Z folded to lowercase by adding 32 to the code point).
+All routines are declared `PUBLIC` in `strutil.asm` and referenced via `EXTRN` in the modules that use them. Each is a tight loop operating on 16-bit words, with inline ASCII case folding for the comparison functions (uppercase A–Z folded to lowercase by adding 32 to the code point).
 
 ---
 
@@ -565,6 +597,57 @@ All 34 privileges should appear with state **Enabled**.
 Use CMDT with the same caution you would apply to a kernel debugger. Mistakes at this privilege level can render the operating system unbootable.
 
 CMDT requires Administrator privileges to run. It does not bypass UAC — the user must explicitly elevate the process before CMDT can acquire the TrustedInstaller token.
+
+---
+
+## Changelog
+
+<details>
+<summary><strong>15.05.2026</strong></summary>
+
+### Source refactoring — monolith split into focused modules
+
+The x64 source was a single ~90 KB `main.asm`. It has been split into nine dedicated modules with no change in compiled binary size or behaviour:
+
+- `cli.asm` — CLI mode and file-run dispatch; owns the `-outfile` relay protocol
+- `help.asm` — usage banner text and help-switch recognition (`HelpCheckAndExit`, `ShowUsage`)
+- `relay.asm` — non-admin output relay (`NonAdminRelayLaunch`)
+- `install.asm` — context menu registration and Sticky Keys IFEO hook management
+- `strutil.asm` — wide-character string helpers (`wcscpy_p`, `wcscat_p`, `wcscmp_ci`, `wcscmp_token`, `wcslen_p`, `skip_spaces`, `DecryptWideStr`)
+- `process.asm` — `CreateProcessWithTokenW` wrapper
+- `token.asm`, `window.asm` — unchanged in responsibility, trimmed in size
+- `main.asm` — entry point, CLI/GUI dispatch, privilege table, global data
+
+### Fix: `cmdt -cli <command> >> out.txt` from a non-admin shell
+
+Running `cmdt -cli net session >> out.txt` (or any `>`, `>>`, `|` redirect) from a non-admin shell previously produced no output — the elevated child process was spawned in a new process tree by UAC and its stdout handle was disconnected from the caller's redirect target.
+
+The fix introduces a **temp-file relay** in `relay.asm`:
+
+1. Non-admin parent creates a temp file via `GetTempFileNameW`.
+2. Inserts internal `-outfile <path>` token into the argument string and launches the elevated child via `ShellExecuteExW("runas")`, waiting with `WaitForSingleObject`.
+3. Elevated child (`cli.asm`, `mode_cli_setup`) opens the temp file with an inheritable `GENERIC_WRITE` handle and uses it as `hStdOutput`/`hStdError` for the spawned process.
+4. After the child exits, the non-admin parent streams the temp file to its own `STD_OUTPUT_HANDLE` and deletes it.
+
+This makes all of the following work correctly from both admin and non-admin shells:
+
+```
+cmdt_x64.exe -cli net session >> out.txt
+cmdt_x64.exe -cli cmd /c whoami > result.txt
+cmdt_x64.exe -cli cmd /c icacls C:\Windows\servicing | findstr Everyone
+```
+
+The relay is skipped for `-new` (detached console; no output to capture) and falls back to plain UAC self-elevation if temp-file creation fails.
+
+### Fix: help switches work without elevation and with redirection
+
+`cmdt -help`, `cmdt -h`, `cmdt --help`, `cmdt -?`, `cmdt /?`, `cmdt /h`, and `cmdt /help` previously triggered UAC self-elevation before printing anything — meaning the elevated process had no console to write to, and `cmdt -help > out.txt` produced an empty file.
+
+The help check now runs in `mainCRTStartup` **before** `IsUserAnAdmin()`. `HelpCheckAndExit` in `help.asm` scans `argv[1]` for all seven recognized spellings. If a match is found, it calls `ShowUsage` and exits without ever calling UAC.
+
+`ShowUsage` selects the output API via `GetFileType(STD_OUTPUT_HANDLE)`: `WriteConsoleW` for a real console, `WriteFile` for a file or pipe. Both interactive display and `cmdt -help > out.txt` now produce correct output in all session types.
+
+</details>
 
 ---
 

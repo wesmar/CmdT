@@ -61,8 +61,16 @@ SC_STATUS_PROCESS_INFO      EQU 0         ; Query process info
 ; STARTUPINFO CONSTANTS
 ; ==============================================================================
 STARTUPINFOW_SIZE           EQU 104       ; Size of STARTUPINFOW structure
+STARTUPINFOEX_SIZE          EQU 112       ; STARTUPINFOW (104) + lpAttributeList (8)
 STARTF_USESHOWWINDOW        EQU 00000001h ; Use wShowWindow field
 SW_HIDE                     EQU 0         ; Hide window
+
+; PROC_THREAD_ATTRIBUTE list constants. Used with STARTUPINFOEX to force
+; specific handles to be inherited by a child process even when the
+; CreateProcess* variant in use (e.g. CreateProcessWithTokenW) would
+; otherwise not propagate handles via STARTF_USESTDHANDLES alone.
+EXTENDED_STARTUPINFO_PRESENT      EQU 00080000h
+PROC_THREAD_ATTRIBUTE_HANDLE_LIST EQU 00020002h
 
 ; ==============================================================================
 ; WINDOW STYLES
@@ -254,6 +262,22 @@ VK_ESCAPE                   EQU 1Bh      ; ESC key
 ; CONSOLE ATTACH FLAGS
 ; ==============================================================================
 ATTACH_PARENT_PROCESS       EQU 0FFFFFFFFh ; Attach to parent console
+
+; ==============================================================================
+; SHELLEXECUTEINFOW MASK FLAGS
+; ==============================================================================
+SEE_MASK_NOCLOSEPROCESS     EQU 00000040h ; Keep hProcess valid after call
+
+; ==============================================================================
+; FILE I/O CONSTANTS (used by output-relay mechanism)
+; ==============================================================================
+GENERIC_READ                EQU 80000000h
+GENERIC_WRITE               EQU 40000000h
+FILE_SHARE_READ             EQU 00000001h
+FILE_SHARE_WRITE            EQU 00000002h
+CREATE_ALWAYS               EQU 2
+OPEN_EXISTING               EQU 3
+FILE_ATTRIBUTE_NORMAL       EQU 00000080h
 
 ; ==============================================================================
 ; REGISTRY CONSTANTS

@@ -20,6 +20,9 @@ EXTRN CreateProcessWithTokenW:PROC
 EXTRN CloseHandle:PROC
 EXTRN GetSystemDirectoryW:PROC
 EXTRN GetStdHandle:PROC
+EXTRN GetCurrentProcess:PROC
+EXTRN DuplicateHandle:PROC
+EXTRN WaitForSingleObject:PROC
 
 ; ==============================================================================
 ; UNINITIALIZED DATA SECTION
@@ -35,29 +38,6 @@ sysDirBuf       dw 260 dup(?)
 
 ; ==============================================================================
 ; RunAsTrustedInstaller - Execute Command with Elevated Privileges
-;
-; Purpose: Launches a process with TrustedInstaller privileges. Obtains a
-;          TrustedInstaller token and creates a new process using that token.
-;          Supports both console inheritance and new console creation.
-;
-; Parameters:
-;   RCX = Pointer to command line string (wide char)
-;   EDX = useNewConsole flag (0 = inherit handles, 1 = create new console)
-;
-; Returns:
-;   RAX = 1 on success, 0 on failure
-;
-; Stack frame: 264 bytes for local variables including:
-;   - STARTUPINFOW structure (104 bytes)
-;   - PROCESS_INFORMATION structure (24 bytes)
-;   - Environment block pointer
-;   - System directory buffer pointer
-;
-; Notes:
-;   - Gets TrustedInstaller token from GetTIToken()
-;   - Creates environment block for the token
-;   - Sets working directory to Windows System directory
-;   - Handles both console modes (inherit or new)
 ; ==============================================================================
 RunAsTrustedInstaller proc frame
     push rbx
@@ -82,11 +62,10 @@ RunAsTrustedInstaller proc frame
     ; Obtain TrustedInstaller token
     call GetTIToken
     test rax, rax
-    jz rp_no_token              ; Failed to get token
+    jz rp_no_token
     mov r13, rax                ; R13 = TrustedInstaller token handle
 
     ; Initialize STARTUPINFOW structure to zero
-    ; Structure is at [rsp+40], size = 104 bytes = 13 QWORDs
     lea rdi, [rsp+40]
     xor rax, rax
     mov rcx, 13
@@ -101,79 +80,136 @@ RunAsTrustedInstaller proc frame
 
     ; Set structure size (cb field)
     mov dword ptr [rsp+40], STARTUPINFOW_SIZE
+    mov dword ptr [rsp+192], 0      ; stdin duplicate flag
+    mov dword ptr [rsp+196], 0      ; stdout duplicate flag
+    mov dword ptr [rsp+200], 0      ; stderr duplicate flag
+
+    ; Check for output-relay mode
+    cmp qword ptr g_relayHandle, 0
+    jne rp_relay_mode
 
     ; Check console mode
     test ebx, ebx
-    jnz rp_new_console          ; Create new console
+    jnz rp_new_console
 
     ; --- Mode 1: Inherit standard handles from parent process ---
-    
-    ; Get standard input handle
+    ; cmd.exe can give this GUI-subsystem process usable redirected std
+    ; handles that are not themselves inheritable by the TI child. Duplicate
+    ; them as inheritable handles before placing them in STARTUPINFO.
+    sub rsp, 32
+    call GetCurrentProcess
+    add rsp, 32
+    mov rsi, rax                    ; current process pseudo-handle
+
     mov ecx, STD_INPUT_HANDLE
     sub rsp, 32
     call GetStdHandle
     add rsp, 32
     mov qword ptr [rsp+40+80], rax  ; hStdInput
+    test rax, rax
+    jz rp_dup_stdout
+    cmp rax, -1
+    je rp_dup_stdout
+    sub rsp, 64
+    mov qword ptr [rsp+32], 0       ; dwDesiredAccess (ignored)
+    mov dword ptr [rsp+40], 1       ; bInheritHandle = TRUE
+    mov dword ptr [rsp+48], 2       ; DUPLICATE_SAME_ACCESS
+    lea r9, [rsp+64+40+80]
+    mov r8, rsi
+    mov rdx, qword ptr [rsp+64+40+80]
+    mov rcx, rsi
+    call DuplicateHandle
+    add rsp, 64
+    test eax, eax
+    jz rp_dup_stdout
+    mov dword ptr [rsp+192], 1
 
-    ; Get standard output handle
+rp_dup_stdout:
     mov ecx, STD_OUTPUT_HANDLE
     sub rsp, 32
     call GetStdHandle
     add rsp, 32
     mov qword ptr [rsp+40+88], rax  ; hStdOutput
+    test rax, rax
+    jz rp_dup_stderr
+    cmp rax, -1
+    je rp_dup_stderr
+    sub rsp, 64
+    mov qword ptr [rsp+32], 0
+    mov dword ptr [rsp+40], 1
+    mov dword ptr [rsp+48], 2
+    lea r9, [rsp+64+40+88]
+    mov r8, rsi
+    mov rdx, qword ptr [rsp+64+40+88]
+    mov rcx, rsi
+    call DuplicateHandle
+    add rsp, 64
+    test eax, eax
+    jz rp_dup_stderr
+    mov dword ptr [rsp+196], 1
 
-    ; Get standard error handle
+rp_dup_stderr:
     mov ecx, STD_ERROR_HANDLE
     sub rsp, 32
     call GetStdHandle
     add rsp, 32
     mov qword ptr [rsp+40+96], rax  ; hStdError
+    test rax, rax
+    jz rp_stdio_ready
+    cmp rax, -1
+    je rp_stdio_ready
+    sub rsp, 64
+    mov qword ptr [rsp+32], 0
+    mov dword ptr [rsp+40], 1
+    mov dword ptr [rsp+48], 2
+    lea r9, [rsp+64+40+96]
+    mov r8, rsi
+    mov rdx, qword ptr [rsp+64+40+96]
+    mov rcx, rsi
+    call DuplicateHandle
+    add rsp, 64
+    test eax, eax
+    jz rp_stdio_ready
+    mov dword ptr [rsp+200], 1
 
-    ; Set dwFlags to use standard handles
+rp_stdio_ready:
+    mov dword ptr [rsp+40+60], STARTF_USESTDHANDLES
+    jmp rp_setup_env
+
+rp_relay_mode:
+    ; --- Mode 3: Redirect child stdout/stderr to relay file ---
+    mov qword ptr [rsp+40+80], 0
+    mov rax, qword ptr g_relayHandle
+    mov qword ptr [rsp+40+88], rax
+    mov qword ptr [rsp+40+96], rax
     mov dword ptr [rsp+40+60], STARTF_USESTDHANDLES
     jmp rp_setup_env
 
 rp_new_console:
     ; --- Mode 2: Create new console window ---
-    
-    ; Set dwFlags to use show window setting
     mov dword ptr [rsp+40+60], STARTF_USESHOWWINDOW
-    
-    ; Set wShowWindow to SW_SHOWNORMAL
     mov word ptr [rsp+40+64], SW_SHOWNORMAL
 
 rp_setup_env:
     ; Initialize PROCESS_INFORMATION structure to zero
-    ; Structure is at [rsp+152], size = 24 bytes
     lea rdi, [rsp+152]
     xor rax, rax
-    mov qword ptr [rdi], rax        ; hProcess
-    mov qword ptr [rdi+8], rax      ; hThread
-    mov qword ptr [rdi+16], rax     ; dwProcessId and dwThreadId
+    mov qword ptr [rdi], rax
+    mov qword ptr [rdi+8], rax
+    mov qword ptr [rdi+16], rax
 
     ; Initialize lpEnvironment pointer to NULL
-    ; Will be filled by CreateEnvironmentBlock if successful
     mov qword ptr [rsp+184], 0
 
     ; Create environment block for the TrustedInstaller token
-    ; BOOL CreateEnvironmentBlock(
-    ;   [out] LPVOID  *lpEnvironment,    -> [rsp+184]
-    ;   [in]  HANDLE  hToken,            -> r13
-    ;   [in]  BOOL    bInherit           -> FALSE (0)
-    ; )
-    xor r8d, r8d                    ; R8 = bInherit = FALSE
-    mov rdx, r13                    ; RDX = token handle
-    lea rcx, [rsp+184]              ; RCX = &lpEnvironment
+    xor r8d, r8d
+    mov rdx, r13
+    lea rcx, [rsp+184]
     sub rsp, 32
     call CreateEnvironmentBlock
     add rsp, 32
-    ; Note: Continue even if this fails (lpEnvironment remains NULL)
 
     ; Get Windows System directory path
-    ; UINT GetSystemDirectoryW(
-    ;   [out] LPWSTR lpBuffer,          -> sysDirBuf
-    ;   [in]  UINT   uSize              -> 260
-    ; )
     lea rcx, sysDirBuf
     mov edx, 260
     sub rsp, 32
@@ -182,36 +218,34 @@ rp_setup_env:
 
     ; Prepare stack parameters for CreateProcessWithTokenW
     ; Function requires 10 parameters (4 in registers, 6 on stack)
-    sub rsp, 80                     ; Reserve space for 6 stack parameters + shadow
+    sub rsp, 80                     ; Space for 6 stack parameters + 32 shadow + padding
 
     ; Set up register parameters
     mov rcx, r13                    ; RCX = hToken
-    mov edx, 1                      ; EDX = dwLogonFlags = LOGON_WITH_PROFILE
+    mov edx, 1                      ; EDX = LOGON_WITH_PROFILE
     xor r8, r8                      ; R8 = lpApplicationName = NULL
     mov r9, r12                     ; R9 = lpCommandLine
 
-    ; Set up stack parameters (in order):
-    ; [rsp+32] = dwCreationFlags
-    ; [rsp+40] = lpEnvironment
-    ; [rsp+48] = lpCurrentDirectory
-    ; [rsp+56] = lpStartupInfo
-    ; [rsp+64] = lpProcessInformation
-
-    ; Determine creation flags based on console mode
+    ; Creation flags
+    cmp qword ptr g_relayHandle, 0
+    jne rp_flags_relay
     test ebx, ebx
     jnz rp_flags_new
-    mov eax, CREATE_UNICODE_ENVIRONMENT         ; Inherit console
+    mov eax, CREATE_UNICODE_ENVIRONMENT
     jmp rp_flags_done
 rp_flags_new:
     mov eax, CREATE_NEW_CONSOLE or CREATE_UNICODE_ENVIRONMENT
+    jmp rp_flags_done
+rp_flags_relay:
+    mov eax, CREATE_NO_WINDOW or CREATE_UNICODE_ENVIRONMENT
 rp_flags_done:
     mov [rsp+32], rax               ; dwCreationFlags
 
-    mov rax, [rsp+80+184]           ; Get lpEnvironment
+    mov rax, [rsp+80+184]
     mov [rsp+40], rax               ; lpEnvironment
 
     lea rax, sysDirBuf
-    mov [rsp+48], rax               ; lpCurrentDirectory = System directory
+    mov [rsp+48], rax               ; lpCurrentDirectory
 
     lea rax, [rsp+80+40]
     mov [rsp+56], rax               ; lpStartupInfo
@@ -219,26 +253,15 @@ rp_flags_done:
     lea rax, [rsp+80+152]
     mov [rsp+64], rax               ; lpProcessInformation
 
-    ; BOOL CreateProcessWithTokenW(
-    ;   [in]            HANDLE                hToken,
-    ;   [in]            DWORD                 dwLogonFlags,
-    ;   [in, optional]  LPCWSTR               lpApplicationName,
-    ;   [in, out]       LPWSTR                lpCommandLine,
-    ;   [in]            DWORD                 dwCreationFlags,
-    ;   [in, optional]  LPVOID                lpEnvironment,
-    ;   [in, optional]  LPCWSTR               lpCurrentDirectory,
-    ;   [in]            LPSTARTUPINFOW        lpStartupInfo,
-    ;   [out]           LPPROCESS_INFORMATION lpProcessInformation
-    ; )
     call CreateProcessWithTokenW
     add rsp, 80
 
     mov r14d, eax                   ; R14 = result (TRUE/FALSE)
 
-    ; Destroy environment block if it was created
+    ; Destroy environment block
     mov rcx, [rsp+184]
     test rcx, rcx
-    jz rp_skip_destroy_env          ; NULL: wasn't created
+    jz rp_skip_destroy_env
     sub rsp, 32
     call DestroyEnvironmentBlock
     add rsp, 32
@@ -246,39 +269,77 @@ rp_skip_destroy_env:
 
     ; Check if process creation succeeded
     test r14d, r14d
-    jz rp_fail                      ; Failed
+    jz rp_fail
 
-    ; Close process handle (we don't need it)
+    ; Determine if we should wait for the child process
+    ; Wait if we are in relay mode OR if we are in inherit mode (CLI)
+    cmp qword ptr g_relayHandle, 0
+    jne rp_do_wait                  ; Always wait in relay mode
+    test ebx, ebx
+    jnz rp_skip_wait                ; Don't wait in new-console/GUI mode
+
+rp_do_wait:
     mov rax, [rsp+152]              ; hProcess
+    test rax, rax
+    jz rp_skip_wait
+    mov rcx, rax
+    mov edx, INFINITE
+    sub rsp, 32
+    call WaitForSingleObject
+    add rsp, 32
+
+rp_skip_wait:
+
+    ; Close inheritable duplicates made only for the child process. Do this
+    ; after the wait in CLI mode so redirected output remains open until the
+    ; child has finished writing.
+    cmp dword ptr [rsp+192], 0
+    je rp_close_dup_stdout
+    mov rcx, qword ptr [rsp+40+80]
+    sub rsp, 32
+    call CloseHandle
+    add rsp, 32
+rp_close_dup_stdout:
+    cmp dword ptr [rsp+196], 0
+    je rp_close_dup_stderr
+    mov rcx, qword ptr [rsp+40+88]
+    sub rsp, 32
+    call CloseHandle
+    add rsp, 32
+rp_close_dup_stderr:
+    cmp dword ptr [rsp+200], 0
+    je rp_close_pi
+    mov rcx, qword ptr [rsp+40+96]
+    sub rsp, 32
+    call CloseHandle
+    add rsp, 32
+
+rp_close_pi:
+    ; Close process and thread handles
+    mov rax, [rsp+152]
     test rax, rax
     jz rp_skip_hp
     mov rcx, rax
     sub rsp, 32
     call CloseHandle
     add rsp, 32
-
 rp_skip_hp:
-    ; Close thread handle (we don't need it)
-    mov rax, [rsp+152+8]            ; hThread
+    mov rax, [rsp+152+8]
     test rax, rax
     jz rp_skip_ht
     mov rcx, rax
     sub rsp, 32
     call CloseHandle
     add rsp, 32
-
 rp_skip_ht:
-    ; Return success
-    mov eax, 1
+    mov eax, 1                      ; Success
     jmp rp_done
 
 rp_fail:
 rp_no_token:
-    ; Return failure
-    xor eax, eax
+    xor eax, eax                    ; Failure
 
 rp_done:
-    ; Cleanup and return
     add rsp, 264
     pop r14
     pop r13

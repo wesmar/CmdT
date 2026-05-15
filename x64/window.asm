@@ -107,6 +107,7 @@ str_BtnBrowse   dw '&','B','r','o','w','s','e','.','.','.',0
 str_StatusInit  dw 'R','e','a','d','y','.',' ','E','n','t','e','r',' ','c','o','m','m','a','n','d','.',0
 str_StatusRunning dw 'L','a','u','n','c','h','i','n','g','.','.','.',0
 str_StatusOK    dw 'P','r','o','c','e','s','s',' ','O','K',0
+PUBLIC str_StatusFail, str_ErrEmpty, str_TitleErr
 str_StatusFail  dw 'F','a','i','l','e','d',0
 
 ; Error messages
@@ -1837,8 +1838,8 @@ CreateMainWindow proc frame
     .pushreg rdi
     push r12
     .pushreg r12
-    sub rsp, 152
-    .allocstack 152
+    sub rsp, 216
+    .allocstack 216
     .endprolog
 
     mov r12, rcx                ; Save hInstance
@@ -1846,7 +1847,7 @@ CreateMainWindow proc frame
     ; Initialize WNDCLASSW structure (zero it out)
     lea rdi, [rsp+40]
     xor rax, rax
-    mov rcx, 10                 ; 10 QWORDs = 80 bytes
+    mov rcx, 10                 ; 10 QWORDs = 80 bytes (covers 72-byte WNDCLASSW)
 @@:
     test rcx, rcx
     jz @F
@@ -1863,17 +1864,18 @@ CreateMainWindow proc frame
     mov [rsp+40+24], r12        ; hInstance
 
     ; Extract icon from shell32.dll (shield icon at index 104)
+    ; Store extracted handles at [rsp+120] and [rsp+128] (safe local space)
     sub rsp, 32
     mov dword ptr [rsp+32], 1   ; nIcons
-    lea r9, [rsp+32+136]        ; phiconSmall
-    lea r8, [rsp+32+128]        ; phiconLarge
+    lea r9, [rsp+32+128]        ; phiconSmall
+    lea r8, [rsp+32+120]        ; phiconLarge
     mov edx, 104                ; nIconIndex
     lea rcx, str_Shell32        ; lpszFile
     call ExtractIconExW
     add rsp, 32
 
     ; Set icon in window class
-    mov rax, [rsp+128]
+    mov rax, [rsp+120]          ; phiconLarge
     mov [rsp+40+32], rax        ; hIcon
 
     ; Load standard arrow cursor
@@ -1949,7 +1951,7 @@ cmw_fail:
     xor rax, rax                ; Return NULL on failure
 
 cmw_done:
-    add rsp, 152
+    add rsp, 216
     pop r12
     pop rdi
     pop rsi

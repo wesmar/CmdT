@@ -53,6 +53,15 @@
     ; Application instance handle
     EXTRN   g_hInstance:QWORD
 
+    ; Output-relay file handle. Non-zero only in the elevated child when
+    ; the parent (non-admin) launched it with the -outfile flag, telling
+    ; the child to redirect spawned process stdout/stderr to a temp file.
+    EXTRN   g_relayHandle:QWORD
+
+    ; Boolean flag: should the spawned command run in a brand new console
+    ; window (CREATE_NEW_CONSOLE) instead of inheriting the parent's?
+    EXTRN   g_useNewConsole:DWORD
+
 ; ==============================================================================
 ; WORKING BUFFERS
 ; ==============================================================================
@@ -82,3 +91,15 @@
 
     ; Buffer for decrypted strings (reusable, 520 WCHARs)
     EXTRN   g_decryptBuf:WORD
+
+    ; Temp directory path returned by GetTempPathW (relay path setup).
+    EXTRN   g_tempDirBuf:WORD
+
+    ; Temp file path produced by GetTempFileNameW (relay payload location).
+    EXTRN   g_relayPath:WORD
+
+    ; Modified argument string built by relay parent for the elevated child.
+    EXTRN   g_relayArgs:WORD
+
+    ; 4 KB scratch buffer used to stream relay-temp bytes back to stdout.
+    EXTRN   g_relayReadBuf:BYTE

@@ -27,7 +27,8 @@ if (-not (Test-Path $BinDir)) {
     New-Item -ItemType Directory -Path $BinDir | Out-Null
 }
 
-$FILES = @("main", "token", "process", "window")
+$FILES_X86 = @("main", "token", "process", "window")
+$FILES_X64 = @("main", "token", "process", "window", "strutil", "help", "install", "relay", "cli")
 $LIBS = @("kernel32.lib", "user32.lib", "advapi32.lib", "shlwapi.lib", "shell32.lib", "gdi32.lib", "comdlg32.lib", "userenv.lib", "ole32.lib", "dwmapi.lib", "OleAut32.lib")
 $BuildSuccess = $true
 
@@ -39,7 +40,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Resource compilation failed" -ForegroundColor Red
     $BuildSuccess = $false
 } else {
-    foreach ($f in $FILES) {
+    foreach ($f in $FILES_X86) {
         & $ML32 /c /Cp /Cx /Zi /I x86 /Fo"x86\$f.obj" "x86\$f.asm"
         if ($LASTEXITCODE -ne 0) {
             Write-Host "ERROR: Assembly of $f.asm failed" -ForegroundColor Red
@@ -83,7 +84,7 @@ if ($LASTEXITCODE -ne 0) {
     $BuildSuccess = $false
 } else {
     $x64success = $true
-    foreach ($f in $FILES) {
+    foreach ($f in $FILES_X64) {
         & $ML64 /c /Cp /Cx /Zi /I x64 /Fo"x64\$f.obj" "x64\$f.asm"
         if ($LASTEXITCODE -ne 0) {
             Write-Host "ERROR: Assembly of $f.asm failed" -ForegroundColor Red
@@ -93,7 +94,7 @@ if ($LASTEXITCODE -ne 0) {
         }
     }
     if ($x64success) {
-        $linkArgs = @("x64\main.obj", "x64\token.obj", "x64\process.obj", "x64\window.obj", "cmdt_x64.res", "/subsystem:windows", "/entry:mainCRTStartup", "/Brepro", "/out:bin\cmdt_x64.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH64_UM", "/LIBPATH:$LIBPATH64_UCRT") + $LIBS
+        $linkArgs = @("x64\main.obj", "x64\token.obj", "x64\process.obj", "x64\window.obj", "x64\strutil.obj", "x64\help.obj", "x64\install.obj", "x64\relay.obj", "x64\cli.obj", "cmdt_x64.res", "/subsystem:windows", "/entry:mainCRTStartup", "/Brepro", "/out:bin\cmdt_x64.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH64_UM", "/LIBPATH:$LIBPATH64_UCRT") + $LIBS
         & $LINK64 $linkArgs
         if ($LASTEXITCODE -ne 0) { 
             $BuildSuccess = $false 

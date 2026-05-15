@@ -607,7 +607,7 @@ CMDT requires Administrator privileges to run. It does not bypass UAC — the us
 
 ### Source refactoring — monolith split into focused modules
 
-The x64 source was a single ~90 KB `main.asm`. It has been split into nine dedicated modules with no change in compiled binary size or behaviour:
+The x64 source previously consisted of several files, one of which was a large monolithic `main.asm` (~90 KB). That file has been refactored into several focused modules, with no change in compiled binary size or behavior:
 
 - `cli.asm` — CLI mode and file-run dispatch; owns the `-outfile` relay protocol
 - `help.asm` — usage banner text and help-switch recognition (`HelpCheckAndExit`, `ShowUsage`)

@@ -6,7 +6,7 @@
 
 CMDT launches any process under the **NT SERVICE\\TrustedInstaller** security context — the highest privilege level in Windows, above both Administrator and SYSTEM. It enables all 34 Windows security privileges in the spawned process token, giving unrestricted access to every protected resource on the system.
 
-The entire tool compiles to **under 30 KB** (x64) and **under 20 KB** (x86). No C runtime. No frameworks. No external dependencies beyond the Windows kernel and a handful of system DLLs that ship with every Windows installation since Vista.
+The entire tool compiles to **under 30 KB** (x64) and **under 25 KB** (x86). No C runtime. No frameworks. No external dependencies beyond the Windows kernel and a handful of system DLLs that ship with every Windows installation since Vista.
 
 ---
 
@@ -36,9 +36,9 @@ Both architectures — **x86 (IA-32)** and **x64 (AMD64)** — are built from se
 | Binary | Size | Architecture |
 |---|---|---|
 | `cmdt_x64.exe` | **under 30 KB** | x64 / AMD64 |
-| `cmdt_x86.exe` | **under 20 KB** | x86 / IA-32 |
+| `cmdt_x86.exe` | **under 25 KB** | x86 / IA-32 |
 
-For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in under 30 KB. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
+For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in well under 30 KB on x64 and 25 KB on x86. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
 
 ---
 
@@ -418,7 +418,7 @@ At runtime, the `BuildPrivilegeName` procedure concatenates these three parts in
 
 This decomposition has two engineering consequences:
 
-1. **Size reduction** — The prefix (`Se`, 4 bytes UTF-16) and suffix (`Privilege`, 18 bytes UTF-16) are stored once instead of 34 times, saving approximately 750 bytes. In a 20 KB binary, that is nearly 4% of the total size.
+1. **Size reduction** — The prefix (`Se`, 4 bytes UTF-16) and suffix (`Privilege`, 18 bytes UTF-16) are stored once instead of 34 times, saving approximately 750 bytes. In a sub-25 KB binary, that is nearly 3% of the total size.
 
 2. **Static analysis opacity** — Automated scanners and signature-based tools that grep for known privilege strings like `SeDebugPrivilege` or `SeTcbPrivilege` will find **no matches** in the binary. The strings `Se` and `Privilege` appear separately, and the middle parts (`Debug`, `Tcb`, `Backup`, etc.) are generic English words that carry no security significance on their own. This is not obfuscation — it is a natural consequence of factoring out common substrings in a size-constrained binary. But the side effect is significant: the binary's static footprint does not betray the scope of privileges it enables.
 
@@ -531,7 +531,7 @@ cmdt_asm/
 │   └── …
 ├── bin/                    # Compiled binaries
 │   ├── cmdt_x64.exe        # 64-bit binary (<30 KB)
-│   └── cmdt_x86.exe        # 32-bit binary (<20 KB)
+│   └── cmdt_x86.exe        # 32-bit binary (<25 KB)
 ├── cmdt.rc                 # Version info resource
 ├── cmdt.manifest           # Application manifest (DPI, visual styles, execution level)
 ├── build.ps1               # Build script (assembles + links both architectures)
@@ -682,10 +682,10 @@ During early development, the minimal proof-of-concept builds were significantly
 |---|---|---|
 | CLI-only (no GUI, no registry, no manifest) | **4 KB** | Bare token acquisition + `CreateProcessWithTokenW` |
 | Hybrid GUI/CLI (no registry, no manifest) | **6 KB** | Added window creation, MRU, drag-and-drop |
-| Current full build (x86) | **<20 KB** | Hybrid mode, context menu, UAC self-elevation, manifest, COM `.lnk` resolution |
+| Current full build (x86) | **<25 KB** | Hybrid mode, context menu, UAC self-elevation, manifest, COM `.lnk` resolution |
 | Current full build (x64) | **<30 KB** | Same feature set, 64-bit calling convention overhead |
 
-The growth from 4–6 KB to the current size is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, the Sticky Keys IFEO hook with Defender exclusion management, UAC self-elevation, and the wide-character string constants for registry paths and UI text. The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
+The growth from 4–6 KB to the current size (~23 KB on x86, ~29 KB on x64) is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, the Sticky Keys IFEO hook with Defender exclusion management, UAC self-elevation, and the wide-character string constants for registry paths and UI text. The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
 
 ---
 

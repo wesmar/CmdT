@@ -43,6 +43,7 @@ PROCESS_QUERY_DUP           EQU 0440h    ; Query + Duplicate (0x0400 | 0x0040)
 CREATE_NO_WINDOW            EQU 08000000h ; Create process without console window
 CREATE_NEW_CONSOLE          EQU 00000010h ; Create new console window for process
 CREATE_UNICODE_ENVIRONMENT  EQU 00000400h ; Environment block is Unicode
+DUPLICATE_SAME_ACCESS       EQU 00000002h ; DuplicateHandle option
 
 ; ==============================================================================
 ; TOOLHELP32 CONSTANTS
@@ -234,6 +235,13 @@ STD_INPUT_HANDLE            EQU -10      ; Standard input (stdin)
 STD_OUTPUT_HANDLE           EQU -11      ; Standard output (stdout)
 STD_ERROR_HANDLE            EQU -12      ; Standard error (stderr)
 STARTF_USESTDHANDLES        EQU 00000100h ; Use hStd* fields in STARTUPINFO
+GENERIC_READ                EQU 80000000h ; File read access
+GENERIC_WRITE               EQU 40000000h ; File write access
+FILE_SHARE_READ             EQU 00000001h ; Share read access
+CREATE_ALWAYS               EQU 2         ; Always create/truncate file
+OPEN_EXISTING               EQU 3         ; Open only if file exists
+FILE_ATTRIBUTE_NORMAL       EQU 00000080h ; Normal file attribute
+FILE_TYPE_CHAR              EQU 00000002h ; Character device / console
 
 ; ==============================================================================
 ; MENU FLAGS

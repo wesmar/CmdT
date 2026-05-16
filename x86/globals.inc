@@ -41,6 +41,7 @@ EXTRN g_hwndStatus:DWORD        ; Status label handle (shows operation status)
 ; ==============================================================================
 EXTRN g_hConsoleOut:DWORD       ; Console output handle (for CLI mode)
 EXTRN g_hInstance:DWORD         ; Application instance handle (HINSTANCE)
+EXTRN g_relayHandle:DWORD       ; Relay output file handle for elevated -outfile mode
 
 ; ==============================================================================
 ; GLOBAL BUFFERS
@@ -52,3 +53,16 @@ EXTRN g_statusBuf:WORD          ; Status message buffer (520 wide chars)
 EXTRN g_filePath:WORD           ; File path buffer (520 wide chars)
 EXTRN g_argsBuf:WORD            ; Arguments buffer (520 wide chars)
 EXTRN g_tempBuf:WORD            ; Temporary work buffer (1040 wide chars = 2080 bytes)
+
+EXTRN g_exePath:WORD            ; Exe path (UAC self-elevate + context menu)
+EXTRN g_useNewConsole:DWORD     ; New console window flag for spawned command
+EXTRN g_tempDirBuf:WORD         ; Temp dir buffer for relay setup
+EXTRN g_relayPath:WORD          ; Temp file path produced by relay parent
+EXTRN g_relayArgs:WORD          ; Modified args string for elevated relay child
+EXTRN g_relayReadBuf:BYTE       ; Streaming buffer for relay-back to stdout
+
+; Promoted from LOCALs of `start` so cli.asm's dispatch labels can reach them.
+EXTRN g_argv:DWORD              ; Argument vector (LocalFree-able)
+EXTRN g_argc:DWORD              ; Argument count
+EXTRN g_argv1:DWORD             ; Cached argv[1] pointer
+EXTRN g_sa:DWORD                ; SECURITY_ATTRIBUTES for the relay file

@@ -36,6 +36,9 @@ CreateProcessWithTokenW     PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWO
 CloseHandle                 PROTO :DWORD
 GetSystemDirectoryW         PROTO :DWORD,:DWORD
 GetStdHandle                PROTO :DWORD
+GetCurrentProcess           PROTO
+DuplicateHandle             PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+WaitForSingleObject         PROTO :DWORD,:DWORD
 
 ; ==============================================================================
 ; UNINITIALIZED DATA SECTION
@@ -85,6 +88,9 @@ RunAsTrustedInstaller proc uses ebx esi edi cmdLine:DWORD, useNewConsole:DWORD
     LOCAL startupInfo[17]:DWORD             ; STARTUPINFO structure (68 bytes)
     LOCAL procInfo[4]:DWORD                 ; PROCESS_INFORMATION structure (16 bytes)
     LOCAL dwCreationFlags:DWORD             ; Process creation flags
+    LOCAL dupIn:DWORD                       ; TRUE if stdin was duplicated
+    LOCAL dupOut:DWORD                      ; TRUE if stdout was duplicated
+    LOCAL dupErr:DWORD                      ; TRUE if stderr was duplicated
 
     ; Acquire TrustedInstaller security token
     invoke GetTIToken
@@ -98,6 +104,13 @@ RunAsTrustedInstaller proc uses ebx esi edi cmdLine:DWORD, useNewConsole:DWORD
     mov ecx, 17                             ; 17 DWORDs = 68 bytes
     rep stosd                               ; Zero fill structure
     mov dword ptr [startupInfo], STARTUPINFOW_SIZE  ; Set cb (structure size)
+    mov dupIn, 0
+    mov dupOut, 0
+    mov dupErr, 0
+
+    ; Relay mode: elevated child redirects spawned process output to a temp file.
+    cmp g_relayHandle, 0
+    jne rp_relay_mode
 
     ; Check console mode flag
     cmp useNewConsole, 0
@@ -106,24 +119,65 @@ RunAsTrustedInstaller proc uses ebx esi edi cmdLine:DWORD, useNewConsole:DWORD
     ; --- Console inheritance mode (CLI) ---
     ; This mode is used when running from command line to see output
     ; Standard handles are inherited from parent process
+    invoke GetCurrentProcess
+    mov esi, eax
     
     ; Get standard input handle
     invoke GetStdHandle, STD_INPUT_HANDLE
     mov dword ptr [startupInfo+56], eax     ; hStdInput field
+    test eax, eax
+    jz rp_dup_stdout
+    cmp eax, -1
+    je rp_dup_stdout
+    lea edx, [startupInfo+56]
+    invoke DuplicateHandle, esi, eax, esi, edx, 0, 1, DUPLICATE_SAME_ACCESS
+    test eax, eax
+    jz rp_dup_stdout
+    mov dupIn, 1
 
+rp_dup_stdout:
     ; Get standard output handle
     invoke GetStdHandle, STD_OUTPUT_HANDLE
     mov dword ptr [startupInfo+60], eax     ; hStdOutput field
+    test eax, eax
+    jz rp_dup_stderr
+    cmp eax, -1
+    je rp_dup_stderr
+    lea edx, [startupInfo+60]
+    invoke DuplicateHandle, esi, eax, esi, edx, 0, 1, DUPLICATE_SAME_ACCESS
+    test eax, eax
+    jz rp_dup_stderr
+    mov dupOut, 1
 
+rp_dup_stderr:
     ; Get standard error handle
     invoke GetStdHandle, STD_ERROR_HANDLE
     mov dword ptr [startupInfo+64], eax     ; hStdError field
+    test eax, eax
+    jz rp_stdio_ready
+    cmp eax, -1
+    je rp_stdio_ready
+    lea edx, [startupInfo+64]
+    invoke DuplicateHandle, esi, eax, esi, edx, 0, 1, DUPLICATE_SAME_ACCESS
+    test eax, eax
+    jz rp_stdio_ready
+    mov dupErr, 1
 
+rp_stdio_ready:
     ; Set dwFlags to use standard handles
     mov dword ptr [startupInfo+44], STARTF_USESTDHANDLES
     
     ; Set creation flags for Unicode environment only
     mov dwCreationFlags, CREATE_UNICODE_ENVIRONMENT
+    jmp rp_setup_env
+
+rp_relay_mode:
+    mov dword ptr [startupInfo+56], 0        ; hStdInput = NULL
+    mov eax, g_relayHandle
+    mov dword ptr [startupInfo+60], eax      ; hStdOutput = relay file
+    mov dword ptr [startupInfo+64], eax      ; hStdError = relay file
+    mov dword ptr [startupInfo+44], STARTF_USESTDHANDLES
+    mov dwCreationFlags, CREATE_NO_WINDOW or CREATE_UNICODE_ENVIRONMENT
     jmp rp_setup_env
 
 rp_new_console:
@@ -165,7 +219,7 @@ rp_setup_env:
     ;   lpStartupInfo       - Startup configuration
     ;   lpProcessInformation- Receives process/thread handles
     invoke CreateProcessWithTokenW, hToken, 1, 0, cmdLine, dwCreationFlags, hEnv, offset sysDirBuf, addr startupInfo, addr procInfo
-    push eax                                ; Save result
+    mov ebx, eax                            ; Save result
     
     ; Destroy environment block if it was created
     mov eax, hEnv
@@ -173,10 +227,38 @@ rp_setup_env:
     jz @F                                   ; NULL, skip destruction
     invoke DestroyEnvironmentBlock, hEnv
 @@:
-    pop eax                                 ; Restore CreateProcessWithTokenW result
+    mov eax, ebx                            ; Restore CreateProcessWithTokenW result
     test eax, eax
     jz rp_fail                              ; Process creation failed
+
+    ; Wait for CLI/relay children so redirected output is complete on return.
+    cmp g_relayHandle, 0
+    jne rp_wait_child
+    cmp useNewConsole, 0
+    jne rp_skip_wait
+
+rp_wait_child:
+    mov eax, [procInfo]                     ; hProcess
+    test eax, eax
+    jz rp_skip_wait
+    invoke WaitForSingleObject, eax, 0FFFFFFFFh
+
+rp_skip_wait:
+
+    ; Close inheritable duplicates made only for child startup.
+    cmp dupIn, 0
+    je rp_close_dup_out
+    invoke CloseHandle, dword ptr [startupInfo+56]
+rp_close_dup_out:
+    cmp dupOut, 0
+    je rp_close_dup_err
+    invoke CloseHandle, dword ptr [startupInfo+60]
+rp_close_dup_err:
+    cmp dupErr, 0
+    je rp_close_proc_handles
+    invoke CloseHandle, dword ptr [startupInfo+64]
     
+rp_close_proc_handles:
     ; Close process handle (we don't need to wait for it)
     mov eax, [procInfo]                     ; hProcess
     test eax, eax
@@ -195,6 +277,17 @@ rp_skip_ht:
     ret
 
 rp_fail:
+    cmp dupIn, 0
+    je rp_fail_dup_out
+    invoke CloseHandle, dword ptr [startupInfo+56]
+rp_fail_dup_out:
+    cmp dupOut, 0
+    je rp_fail_dup_err
+    invoke CloseHandle, dword ptr [startupInfo+60]
+rp_fail_dup_err:
+    cmp dupErr, 0
+    je rp_no_token
+    invoke CloseHandle, dword ptr [startupInfo+64]
 rp_no_token:
     xor eax, eax                            ; Return failure
     ret

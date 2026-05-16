@@ -540,7 +540,7 @@ cmdt_asm/
 
 Every source file in `x64/` has a corresponding counterpart in `x86/`. The x86 versions use `.586` + `flat/stdcall` MASM syntax with `invoke` macros; the x64 versions use raw `proc frame` with explicit SEH prologue/epilogue annotations (`.pushreg`, `.allocstack`, `.setframe`, `.endprolog`). Both targets share the same `.rc` and `.manifest` files.
 
-The x64 source was previously a single monolithic `main.asm` (~90 KB). It has been split into focused modules to improve readability and maintainability while keeping the compiled binary size unchanged.
+Both source trees were previously monolithic — a single ~90 KB `main.asm` on each side that held the entry point, dispatcher, all helpers, the GUI, the context-menu installer, and the Sticky-Keys hook. They have since been split into focused modules of roughly 200–700 lines each, while keeping the compiled binary size unchanged. The split is identical on both architectures, so any reader who learns one tree can navigate the other without re-orientation.
 
 ---
 
@@ -602,21 +602,27 @@ CMDT requires Administrator privileges to run. It does not bypass UAC — the us
 
 ## Changelog
 
-<details>
-<summary><strong>15.05.2026</strong></summary>
+<details open>
+<summary><strong>16.05.2026 — modular split for both architectures, MRU policy change, redirect/help fixes</strong></summary>
 
-### Source refactoring — monolith split into focused modules
+This release covers a multi-day overhaul. Both source trees are now modular, the GUI no longer pre-fills the last command at startup, and the CLI redirect path works in every elevation / shell combination.
 
-The x64 source previously consisted of several files, one of which was a large monolithic `main.asm` (~90 KB). That file has been refactored into several focused modules, with no change in compiled binary size or behavior:
+### Source refactoring — monolith split into focused modules (both x86 and x64)
 
-- `cli.asm` — CLI mode and file-run dispatch; owns the `-outfile` relay protocol
-- `help.asm` — usage banner text and help-switch recognition (`HelpCheckAndExit`, `ShowUsage`)
+Each architecture previously had one large monolithic `main.asm` (~90 KB) that bundled the entry point, dispatcher, helpers, GUI, context-menu installer, and Sticky-Keys hook. The split happened on x64 first (15.05.2026); x86 was migrated to the same shape on 16.05.2026 so both trees are now mirror images of each other:
+
+- `cli.asm` — CLI mode and file-run dispatch; owns the `-outfile` relay protocol and (x86 only) the WOW64 regedit fallback (`FixRegeditPath`)
+- `help.asm` — usage banner text and help-switch recognition (`HelpCheckAndExit` / `ShowUsage` on x64; `IsHelpSwitch` / `ShowUsageAndExit` on x86)
 - `relay.asm` — non-admin output relay (`NonAdminRelayLaunch`)
-- `install.asm` — context menu registration and Sticky Keys IFEO hook management
-- `strutil.asm` — wide-character string helpers (`wcscpy_p`, `wcscat_p`, `wcscmp_ci`, `wcscmp_token`, `wcslen_p`, `skip_spaces`, `DecryptWideStr`)
-- `process.asm` — `CreateProcessWithTokenW` wrapper
-- `token.asm`, `window.asm` — unchanged in responsibility, trimmed in size
-- `main.asm` — entry point, CLI/GUI dispatch, privilege table, global data
+- `install.asm` — context menu registration, Sticky-Keys IFEO hook, Defender exclusion management (WMI on x64, PowerShell on x86)
+- `strutil.asm` — wide-character string helpers (`wcscpy_p`, `wcscat_p`, `wcscmp_ci`, `wcscmp_token`, `wcslen_p`, `skip_spaces`; plus `DecryptWideStr` on x64)
+- `process.asm` — `CreateProcessWithTokenW` wrapper, environment block setup
+- `token.asm`, `window.asm` — unchanged in responsibility, trimmed by extracting helpers
+- `main.asm` — entry point, CLI/GUI dispatch, privilege table, global data, `mode_gui` as a standalone proc
+
+To make the x86 split possible, several formerly-local variables of `start` (`pArgv`, `argc`, `argv1`, `sa`) were promoted to globals (`g_argv`, `g_argc`, `g_argv1`, `g_sa`) so the dispatch labels can be reached cross-module while still sharing the parsed command-line state. `mode_gui` was lifted out of `start` into its own `proc` for the same reason — MASM does not let cross-module jumps land inside another procedure.
+
+Compiled binary sizes are unchanged. Both `cmdt_x64.exe` and `cmdt_x86.exe` stay under their previous limits.
 
 ### Fix: `cmdt -cli <command> >> out.txt` from a non-admin shell
 
@@ -625,27 +631,28 @@ Running `cmdt -cli net session >> out.txt` (or any `>`, `>>`, `|` redirect) from
 The fix introduces a **temp-file relay** in `relay.asm`:
 
 1. Non-admin parent creates a temp file via `GetTempFileNameW`.
-2. Inserts internal `-outfile <path>` token into the argument string and launches the elevated child via `ShellExecuteExW("runas")`, waiting with `WaitForSingleObject`.
-3. Elevated child (`cli.asm`, `mode_cli_setup`) opens the temp file with an inheritable `GENERIC_WRITE` handle and uses it as `hStdOutput`/`hStdError` for the spawned process.
-4. After the child exits, the non-admin parent streams the temp file to its own `STD_OUTPUT_HANDLE` and deletes it.
+2. Inserts an internal `-outfile <path>` token into the argument string and launches the elevated child via `ShellExecuteExW("runas")` with `SEE_MASK_NOCLOSEPROCESS`, then waits with `WaitForSingleObject` on the returned `hProcess`.
+3. Elevated child (`cli.asm`, `mode_cli_setup`) opens the temp file with an inheritable `GENERIC_WRITE` handle and uses it as `hStdOutput`/`hStdError` for the spawned process (`CREATE_NO_WINDOW`).
+4. After the child exits, the non-admin parent opens the temp file, streams it to its own `STD_OUTPUT_HANDLE` (which cmd.exe wired up before launch — so `>file`, `>>file`, and `|pipe` all work transparently), then deletes the temp file and exits.
 
-This makes all of the following work correctly from both admin and non-admin shells:
+Two bugs were also fixed while implementing this path:
 
-```
-cmdt_x64.exe -cli net session >> out.txt
-cmdt_x64.exe -cli cmd /c whoami > result.txt
-cmdt_x64.exe -cli cmd /c icacls C:\Windows\servicing | findstr Everyone
-```
+- **`SHELLEXECUTEINFOW.hProcess` offset on x64** — the relay was reading offset `+96` (the `hIcon`/`hMonitor` union) instead of `+104` (the real `hProcess`). That meant `WaitForSingleObject` was skipped and the parent raced the child for the temp file. The relay-decline fallback masked this on x86, where the SHELLEXECUTEINFOW layout is smaller and the offset wasn't wrong.
+- **`AttachConsole` clobbering inherited std handles** — when cmd.exe passes a `>file` redirect handle to a GUI-subsystem child, `AttachConsole(ATTACH_PARENT_PROCESS)` overwrites that handle with `CONOUT$`, silently dropping the redirect target. We now query `GetStdHandle(STD_OUTPUT_HANDLE)` first and only call `AttachConsole` when stdout is `NULL` or `INVALID_HANDLE_VALUE`.
 
-The relay is skipped for `-new` (detached console; no output to capture) and falls back to plain UAC self-elevation if temp-file creation fails.
+The relay is skipped when `-new` is passed (a detached console has no output to capture) and falls back to plain UAC self-elevation if temp-file creation fails.
 
 ### Fix: help switches work without elevation and with redirection
 
 `cmdt -help`, `cmdt -h`, `cmdt --help`, `cmdt -?`, `cmdt /?`, `cmdt /h`, and `cmdt /help` previously triggered UAC self-elevation before printing anything — meaning the elevated process had no console to write to, and `cmdt -help > out.txt` produced an empty file.
 
-The help check now runs in `mainCRTStartup` **before** `IsUserAnAdmin()`. `HelpCheckAndExit` in `help.asm` scans `argv[1]` for all seven recognized spellings. If a match is found, it calls `ShowUsage` and exits without ever calling UAC.
+The help check now runs in the entry point **before** `IsUserAnAdmin()`. The help module scans `argv[1]` for all seven recognized spellings; if a match is found, it prints usage and exits without ever calling UAC.
 
-`ShowUsage` selects the output API via `GetFileType(STD_OUTPUT_HANDLE)`: `WriteConsoleW` for a real console, `WriteFile` for a file or pipe. Both interactive display and `cmdt -help > out.txt` now produce correct output in all session types.
+The usage printer selects the output API via `GetFileType(STD_OUTPUT_HANDLE)`: `WriteConsoleW` for a real console (native UTF-16), `WriteFile` for a file or pipe (raw UTF-16 LE bytes). Both interactive display and `cmdt -help > out.txt` now produce correct output in all session types. After writing to a real console, a fake VK_RETURN is posted to stdin via `WriteConsoleInputW` so cmd.exe redraws its prompt instead of leaving the cursor idle.
+
+### MRU dropdown — no longer pre-selects the last command at startup
+
+The GUI ComboBox used to call `CB_SETCURSEL, 0` on both `LoadMRU` and `SaveMRU`, which auto-filled the edit field with the most recent command. After the change, both call sites use `CB_SETCURSEL, -1` followed by `SetWindowTextW(g_hwndEdit, g_cmdBuf)` (g_cmdBuf is zero-initialized in BSS, so it's an empty string). The dropdown still contains the full history — clicking the arrow shows it as before — but the edit field starts empty, so the user types fresh instead of accidentally re-running the previous command.
 
 </details>
 

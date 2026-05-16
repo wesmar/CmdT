@@ -703,8 +703,13 @@ lm_loop:
     jmp lm_loop
 
 lm_setsel:
-    ; Select first item in ComboBox (most recent command)
-    invoke SendMessageW, g_hwndEdit, CB_SETCURSEL, 0, 0
+    ; Don't pre-select any MRU entry. CB_SETCURSEL -1 clears the dropdown
+    ; selection; then SetWindowTextW with an empty string also clears the
+    ; CBS_DROPDOWN edit-field text (which CB_SETCURSEL -1 alone may leave
+    ; populated). g_cmdBuf is zero-initialized in the BSS, so passing it
+    ; is equivalent to passing L"".
+    invoke SendMessageW, g_hwndEdit, CB_SETCURSEL, -1, 0
+    invoke SetWindowTextW, g_hwndEdit, offset g_cmdBuf
     invoke RegCloseKey, hKey
 
 lm_done:
@@ -812,8 +817,11 @@ sm_write_new:
     invoke SendMessageW, g_hwndEdit, CB_DELETESTRING, MRU_MAX_ITEMS, 0
 
 sm_setsel:
-    ; Select first item
-    invoke SendMessageW, g_hwndEdit, CB_SETCURSEL, 0, 0
+    ; Same no-auto-select policy as LoadMRU — after saving, leave the
+    ; edit field empty so the user types fresh next time instead of
+    ; accidentally re-running the previous command.
+    invoke SendMessageW, g_hwndEdit, CB_SETCURSEL, -1, 0
+    invoke SetWindowTextW, g_hwndEdit, offset g_cmdBuf
     invoke RegCloseKey, hKey
 
 sm_done:

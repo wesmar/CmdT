@@ -36,9 +36,17 @@ RunAsTrustedInstaller   PROTO :DWORD,:DWORD
 ; Shortcut (.lnk) file resolution
 ResolveLnkPath          PROTO :DWORD,:DWORD,:DWORD
 
-; Wide string manipulation utilities
+; Wide string manipulation utilities (defined in strutil.asm)
 wcscpy_p                PROTO :DWORD,:DWORD
 wcscat_p                PROTO :DWORD,:DWORD
+wcscmp_ci               PROTO :DWORD,:DWORD
+wcscmp_token            PROTO :DWORD,:DWORD
+skip_spaces             PROTO :DWORD
+wcslen_p                PROTO :DWORD
+
+; Help / usage display (defined in help.asm)
+IsHelpSwitch            PROTO :DWORD
+ShowUsageAndExit        PROTO :DWORD
 
 ; Windows API functions
 GetModuleHandleW        PROTO :DWORD
@@ -60,20 +68,48 @@ RegDeleteKeyW           PROTO :DWORD,:DWORD
 RegCloseKey             PROTO :DWORD
 AttachConsole           PROTO :DWORD
 GetStdHandle            PROTO :DWORD
+GetFileType             PROTO :DWORD
 WriteConsoleW           PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+WriteFile               PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+WriteConsoleInputW      PROTO :DWORD,:DWORD,:DWORD,:DWORD
+CreateFileW             PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+ReadFile                PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+DeleteFileW             PROTO :DWORD
+GetTempPathW            PROTO :DWORD,:DWORD
+GetTempFileNameW        PROTO :DWORD,:DWORD,:DWORD,:DWORD
 RegDeleteValueW         PROTO :DWORD,:DWORD
 RegOpenKeyExW           PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 WaitForSingleObject     PROTO :DWORD,:DWORD
 CloseHandle             PROTO :DWORD
-RunPsCommand            PROTO :DWORD
+
+; Installation / hook management (defined in install.asm)
+InstallContextMenu      PROTO
+UninstallContextMenu    PROTO
+InstallShift            PROTO
+UninstallShift          PROTO
+
+; Non-admin output relay (defined in relay.asm)
+NonAdminRelayLaunch     PROTO :DWORD,:DWORD,:DWORD
+
+; CLI / file-run dispatch targets (defined in cli.asm). These are reached
+; via JMP rather than CALL — they share start's stack frame for sei
+; and rely on the promoted globals (g_argv, g_argc, g_argv1, g_sa).
+EXTRN mode_cli_found:PROC
+EXTRN mode_file_run:PROC
+
+; mode_gui lives below as its own proc; declared here so we can invoke it
+; from inside `start` (the dispatch's mode_gui_free wrapper).
+mode_gui                PROTO
 
 ; ==============================================================================
 ; CONSTANT STRING DATA
 ; ==============================================================================
 .const
 
-; Registry key for application settings
-str_regKey      dw 'S','o','f','t','w','a','r','e','\','c','m','d','t',0
+; Strings shared with relay.asm and (later) cli.asm. PUBLIC so cross-module
+; references resolve at link time. Help / install switches stay private —
+; they are only consulted in the dispatcher inside `start`.
+PUBLIC str_runas, str_newSwitch, str_extLnk_m, str_space, str_outfileFlag
 
 ; Command-line switch variations for CLI mode
 str_cliSwitch1  dw '-','c','l','i',0      ; Standard Unix-style switch
@@ -83,14 +119,14 @@ str_cliSwitch3  dw 'c','l','i',0          ; Bare switch without hyphen
 ; Switch for new console window creation
 str_newSwitch   dw '-','n','e','w',0
 
+; Internal relay switch used by non-admin -cli parent.
+str_outfileFlag dw '-','o','u','t','f','i','l','e',0
+
 ; File extension strings
 str_extLnk_m    dw '.','l','n','k',0      ; Windows shortcut extension
 str_space       dw ' ',0                   ; Space character for string building
 
 ; CLI fallback for regedit on WOW64-only systems
-str_regedit     dw 'r','e','g','e','d','i','t',0
-str_regedit_exe dw 'r','e','g','e','d','i','t','.','e','x','e',0
-str_regedit_path dw 'C',':','\','W','i','n','d','o','w','s','\','S','y','s','W','O','W','6','4','\','r','e','g','e','d','i','t','.','e','x','e',0
 
 ; UAC self-elevation verb
 str_runas           dw 'r','u','n','a','s',0
@@ -102,83 +138,6 @@ str_uninstallSwitch dw '-','u','n','i','n','s','t','a','l','l',0
 ; Sticky Keys (sethc.exe) IFEO switches
 str_shiftSwitch     dw '-','s','h','i','f','t',0
 str_unshiftSwitch   dw '-','u','n','s','h','i','f','t',0
-
-; Registry paths for Explorer context menu - Directory entries
-str_ctxKeyBg        dw 'D','i','r','e','c','t','o','r','y','\','B','a','c','k','g','r','o','u','n','d','\','s','h','e','l','l','\','C','M','D','T',0
-str_ctxKeyCmdBg     dw 'D','i','r','e','c','t','o','r','y','\','B','a','c','k','g','r','o','u','n','d','\','s','h','e','l','l','\','C','M','D','T','\','c','o','m','m','a','n','d',0
-str_ctxKeyDir       dw 'D','i','r','e','c','t','o','r','y','\','s','h','e','l','l','\','C','M','D','T',0
-str_ctxKeyCmdDir    dw 'D','i','r','e','c','t','o','r','y','\','s','h','e','l','l','\','C','M','D','T','\','c','o','m','m','a','n','d',0
-
-; Registry paths for Explorer context menu - Executable file entries
-str_ctxKeyExe       dw 'e','x','e','f','i','l','e','\','s','h','e','l','l','\','C','M','D','T',0
-str_ctxKeyCmdExe    dw 'e','x','e','f','i','l','e','\','s','h','e','l','l','\','C','M','D','T','\','c','o','m','m','a','n','d',0
-
-; Registry paths for Explorer context menu - Shortcut file entries
-str_ctxKeyLnk       dw 'l','n','k','f','i','l','e','\','s','h','e','l','l','\','C','M','D','T',0
-str_ctxKeyCmdLnk    dw 'l','n','k','f','i','l','e','\','s','h','e','l','l','\','C','M','D','T','\','c','o','m','m','a','n','d',0
-
-; Context menu display text - Directory context menus
-str_ctxTextDir      dw 'O','p','e','n',' ','C','M','D',' ','a','s',' ','T','r','u','s','t','e','d','I','n','s','t','a','l','l','e','r',0
-
-; Context menu display text - File context menus (executables and shortcuts)
-str_ctxTextFile     dw 'R','u','n',' ','a','s',' ','T','r','u','s','t','e','d','I','n','s','t','a','l','l','e','r',0
-
-; Registry value names and icon paths
-str_iconVal         dw 'I','c','o','n',0
-str_iconPath        dw 's','h','e','l','l','3','2','.','d','l','l',',','1','0','4',0
-
-; Command template components
-str_cmdQuote        dw '"',0
-str_cmdSuffixDir    dw '"',' ','-','c','l','i',' ','-','n','e','w',' ','c','m','d','.','e','x','e',' ','/','k',' ','c','d',' ','/','d',' ','"','%','V','"',0
-str_cmdSuffixFile   dw '"',' ','"','%','1','"',0
-
-; IFEO registry path and values for sethc.exe hook
-str_ifeoKey         dw 'S','O','F','T','W','A','R','E','\'
-                    dw 'M','i','c','r','o','s','o','f','t','\'
-                    dw 'W','i','n','d','o','w','s',' ','N','T','\'
-                    dw 'C','u','r','r','e','n','t','V','e','r','s','i','o','n','\'
-                    dw 'I','m','a','g','e',' ','F','i','l','e',' '
-                    dw 'E','x','e','c','u','t','i','o','n',' '
-                    dw 'O','p','t','i','o','n','s','\'
-                    dw 's','e','t','h','c','.','e','x','e',0
-str_debuggerVal     dw 'D','e','b','u','g','g','e','r',0
-str_shiftSuffix     dw ' ','-','c','l','i',' ','-','n','e','w',' ','c','m','d','.','e','x','e',0
-
-; PowerShell executable and Defender exclusion command fragments (dynamic)
-str_powershell      dw 'p','o','w','e','r','s','h','e','l','l','.','e','x','e',0
-str_psAddPfx        dw '-','N','o','P','r','o','f','i','l','e',' ','-','c',' '
-                    dw '"','A','d','d','-','M','p','P','r','e','f','e','r','e','n','c','e',' '
-                    dw '-','E','x','c','l','u','s','i','o','n','P','r','o','c','e','s','s',' ',0
-str_psRemPfx        dw '-','N','o','P','r','o','f','i','l','e',' ','-','c',' '
-                    dw '"','R','e','m','o','v','e','-','M','p','P','r','e','f','e','r','e','n','c','e',' '
-                    dw '-','E','x','c','l','u','s','i','o','n','P','r','o','c','e','s','s',' ',0
-str_psSuffix        dw ',','c','m','d','.','e','x','e',' ','-','F','o','r','c','e','"',0
-
-; Usage help text displayed when an unknown switch is given
-str_usage       dw 13,10
-                dw 'U','s','a','g','e',':',' ','c','m','d','t','.','e','x','e',' ','[','o','p','t','i','o','n',']',13,10
-                dw 13,10
-                dw ' ',' ','-','c','l','i',' ','<','c','m','d','>'
-                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
-                dw 'R','u','n',' ','c','o','m','m','a','n','d',13,10
-                dw ' ',' ','-','c','l','i',' ','-','n','e','w',' ','<','c','m','d','>'
-                dw ' ',' ',' ',' ',' '
-                dw 'R','u','n',' ','i','n',' ','n','e','w',' ','c','o','n','s','o','l','e',13,10
-                dw ' ',' ','-','i','n','s','t','a','l','l'
-                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
-                dw 'A','d','d',' ','c','o','n','t','e','x','t',' ','m','e','n','u',13,10
-                dw ' ',' ','-','u','n','i','n','s','t','a','l','l'
-                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
-                dw 'R','e','m','o','v','e',' ','c','o','n','t','e','x','t',' ','m','e','n','u',13,10
-                dw ' ',' ','-','s','h','i','f','t'
-                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
-                dw 'H','o','o','k',' ','s','e','t','h','c','.','e','x','e',13,10
-                dw ' ',' ','-','u','n','s','h','i','f','t'
-                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
-                dw 'U','n','h','o','o','k',' ','s','e','t','h','c','.','e','x','e',13,10
-                dw 13,10
-                dw ' ',' ','N','o',' ','a','r','g','s',' ','t','o',' ','s','t','a','r','t',' ','G','U','I','.',13,10
-                dw 0
 
 ; ==============================================================================
 ; PRIVILEGE STRING DEFINITIONS
@@ -244,8 +203,10 @@ g_privTable dd offset privStr_0,offset privStr_1,offset privStr_2,offset privStr
 
 ; Global variables exported for use in other modules
 PUBLIC g_cachedToken, g_tokenTime, g_hwndMain, g_hwndEdit, g_hwndBtn, g_hwndStatus, g_hConsoleOut, g_hInstance
+PUBLIC g_useNewConsole, g_relayHandle
+PUBLIC g_argv, g_argc, g_argv1, g_sa
 PUBLIC privPrefix, privSuffix
-PUBLIC FixRegeditPath
+; FixRegeditPath moved to cli.asm (PUBLIC declared there)
 
 g_cachedToken   dd 0                        ; Cached TrustedInstaller token handle
 g_tokenTime     dd 0                        ; Timestamp of cached token (for expiration)
@@ -256,6 +217,18 @@ g_hwndStatus    dd 0                        ; Status label handle
 g_hConsoleOut   dd 0                        ; Console output handle (CLI mode)
 g_useNewConsole dd 0                        ; Flag: create new console window
 g_hInstance     dd 0                        ; Application instance handle
+g_relayHandle   dd 0                        ; Output relay file handle for elevated child
+
+; Command-line parse outputs from `start` — promoted from LOCALs to globals
+; so cli.asm can refer to them after the dispatch labels were extracted.
+g_argv          dd 0                        ; Argument vector (LocalFree-able)
+g_argc          dd 0                        ; Argument count
+g_argv1         dd 0                        ; Pointer to argv[1] (or NULL)
+
+; SECURITY_ATTRIBUTES used by mode_cli_setup when it opens the relay file
+; with bInheritHandle=TRUE. Three DWORDs: nLength, lpSecurityDescriptor,
+; bInheritHandle.
+g_sa            dd 3 dup(0)
 
 ; ==============================================================================
 ; UNINITIALIZED DATA SECTION
@@ -263,6 +236,7 @@ g_hInstance     dd 0                        ; Application instance handle
 ; ==============================================================================
 .data?
 PUBLIC g_cmdBuf, g_statusBuf, g_filePath, g_argsBuf, g_tempBuf
+PUBLIC g_exePath, g_tempDirBuf, g_relayPath, g_relayArgs, g_relayReadBuf
 
 g_cmdBuf        dw 520 dup(?)               ; Command line buffer (1040 bytes)
 g_statusBuf     dw 520 dup(?)               ; Status message buffer (1040 bytes)
@@ -270,191 +244,16 @@ g_filePath      dw 520 dup(?)               ; File path buffer (1040 bytes)
 g_argsBuf       dw 520 dup(?)               ; Arguments buffer (1040 bytes)
 g_tempBuf       dw 1040 dup(?)              ; Temporary work buffer (2080 bytes)
 g_exePath       dw 260 dup(?)               ; Exe path buffer (UAC and context menu)
+g_tempDirBuf    dw 260 dup(?)               ; Relay temp directory buffer
+g_relayPath     dw 260 dup(?)               ; Relay temp file path
+g_relayArgs     dw 1040 dup(?)              ; Relay child argument string
+g_relayReadBuf  db 4096 dup(?)              ; Relay read/copy buffer
 
 ; ==============================================================================
 ; CODE SECTION
 ; ==============================================================================
 .code
 
-; ==============================================================================
-; wcscpy_p - Wide Character String Copy
-;
-; Purpose: Copies a null-terminated wide character string from source to
-;          destination, including the null terminator.
-;
-; Parameters:
-;   dest - Destination buffer pointer
-;   src  - Source string pointer
-;
-; Returns: None (modifies destination buffer)
-;
-; Registers modified: EAX, ESI, EDI
-; ==============================================================================
-wcscpy_p proc dest:DWORD, src:DWORD
-    push esi                                ; Preserve source index register
-    push edi                                ; Preserve destination index register
-    mov edi, dest                           ; EDI = destination pointer
-    mov esi, src                            ; ESI = source pointer
-@@:
-    mov ax, word ptr [esi]                  ; Read wide character (16-bit)
-    mov word ptr [edi], ax                  ; Write to destination
-    test ax, ax                             ; Check for null terminator
-    jz @F                                   ; If zero, we're done
-    add esi, 2                              ; Move to next wide char (2 bytes)
-    add edi, 2                              ; Move destination pointer
-    jmp @B                                  ; Continue loop
-@@:
-    pop edi                                 ; Restore registers
-    pop esi
-    ret
-wcscpy_p endp
-
-; ==============================================================================
-; wcscat_p - Wide Character String Concatenate
-;
-; Purpose: Appends source string to the end of destination string. Finds the
-;          null terminator in destination and copies source starting there.
-;
-; Parameters:
-;   dest - Destination buffer pointer (must contain null-terminated string)
-;   src  - Source string pointer to append
-;
-; Returns: None (modifies destination buffer)
-;
-; Registers modified: EAX, ESI, EDI
-; ==============================================================================
-wcscat_p proc dest:DWORD, src:DWORD
-    push esi                                ; Preserve registers
-    push edi
-    mov edi, dest                           ; EDI = destination pointer
-@@:
-    cmp word ptr [edi], 0                   ; Find end of destination string
-    je @F
-    add edi, 2                              ; Move to next character
-    jmp @B
-@@:
-    mov esi, src                            ; ESI = source pointer
-@@:
-    mov ax, word ptr [esi]                  ; Copy characters from source
-    mov word ptr [edi], ax
-    test ax, ax                             ; Check for null terminator
-    jz @F
-    add esi, 2
-    add edi, 2
-    jmp @B
-@@:
-    pop edi                                 ; Restore registers
-    pop esi
-    ret
-wcscat_p endp
-
-; ==============================================================================
-; wcscmp_ci - Wide Character String Compare (Case-Insensitive)
-;
-; Purpose: Compares two wide character strings ignoring case differences.
-;          Converts A-Z to a-z before comparison.
-;
-; Parameters:
-;   str1 - First string pointer
-;   str2 - Second string pointer
-;
-; Returns:
-;   EAX = 1 if strings match (case-insensitive), 0 if different
-;
-; Registers modified: EAX, EDX, ESI, EDI
-; ==============================================================================
-wcscmp_ci proc str1:DWORD, str2:DWORD
-    push esi                                ; Preserve registers
-    push edi
-    mov esi, str1                           ; ESI = first string
-    mov edi, str2                           ; EDI = second string
-wci_loop:
-    mov ax, word ptr [esi]                  ; Read characters from both strings
-    mov dx, word ptr [edi]
-    ; Convert first character to lowercase if uppercase (A-Z â†’ a-z)
-    cmp ax, 'A'
-    jb wci_skip1                            ; Below 'A', no conversion needed
-    cmp ax, 'Z'
-    ja wci_skip1                            ; Above 'Z', no conversion needed
-    add ax, 32                              ; Convert to lowercase (ASCII offset)
-wci_skip1:
-    ; Convert second character to lowercase if uppercase
-    cmp dx, 'A'
-    jb wci_skip2
-    cmp dx, 'Z'
-    ja wci_skip2
-    add dx, 32                              ; Convert to lowercase
-wci_skip2:
-    cmp ax, dx                              ; Compare normalized characters
-    jne not_eq                              ; Different characters
-    test ax, ax                             ; Check if both are null terminators
-    jz equal                                ; End of strings, they match
-    add esi, 2                              ; Move to next characters
-    add edi, 2
-    jmp wci_loop
-equal:
-    pop edi                                 ; Restore registers
-    pop esi
-    mov eax, 1                              ; Return 1 (strings match)
-    ret
-not_eq:
-    pop edi
-    pop esi
-    xor eax, eax                            ; Return 0 (strings differ)
-    ret
-wcscmp_ci endp
-
-; ==============================================================================
-; skip_spaces - Skip Leading Whitespace
-;
-; Purpose: Advances pointer past any leading space characters (U+0020) in a
-;          wide character string.
-;
-; Parameters:
-;   lpStr - Pointer to wide character string
-;
-; Returns:
-;   EAX = Pointer to first non-space character
-;
-; Registers modified: EAX
-; ==============================================================================
-skip_spaces proc lpStr:DWORD
-    mov eax, lpStr                          ; EAX = current position
-@@:
-    cmp word ptr [eax], ' '                 ; Check if current char is space
-    jne @F                                  ; Not a space, we're done
-    add eax, 2                              ; Skip space (2 bytes for wide char)
-    jmp @B                                  ; Continue checking
-@@:
-    ret                                     ; Return pointer to non-space char
-skip_spaces endp
-
-; ==============================================================================
-; wcslen_p - Wide Character String Length
-;
-; Purpose: Calculates the length of a null-terminated wide character string
-;          (number of characters, not including null terminator).
-;
-; Parameters:
-;   lpStr - Pointer to wide character string
-;
-; Returns:
-;   EAX = Number of characters (excluding null terminator)
-;
-; Registers modified: EAX, ECX
-; ==============================================================================
-wcslen_p proc lpStr:DWORD
-    mov eax, lpStr                          ; EAX = string pointer
-    xor ecx, ecx                            ; ECX = character counter
-@@:
-    cmp word ptr [eax + ecx*2], 0           ; Check for null terminator
-    je @F                                   ; Found null, exit loop
-    inc ecx                                 ; Increment count
-    jmp @B                                  ; Continue
-@@:
-    mov eax, ecx                            ; Return count in EAX
-    ret
-wcslen_p endp
 
 ; ==============================================================================
 ; FixRegeditPath - WOW64-safe regedit fallback
@@ -472,118 +271,7 @@ wcslen_p endp
 ;
 ; Registers modified: EAX, EBX, ECX, EDX, ESI, EDI
 ; ==============================================================================
-FixRegeditPath proc lpCmd:DWORD
-    LOCAL endCh:WORD
-    LOCAL endPtr:DWORD
-    LOCAL afterPtr:DWORD
-    LOCAL quoted:DWORD
-    LOCAL hasPath:DWORD
 
-    mov esi, lpCmd
-    mov eax, esi
-    test eax, eax
-    jz frp_return_orig
-
-    ; Skip leading spaces
-    invoke skip_spaces, esi
-    mov esi, eax
-
-    mov quoted, 0
-    mov hasPath, 0
-
-    ; Check for leading quote
-    cmp word ptr [esi], '"'
-    jne frp_token_start
-    mov quoted, 1
-    add esi, 2
-
-frp_token_start:
-    mov edi, esi                            ; Token start
-frp_scan:
-    mov ax, word ptr [edi]
-    test ax, ax
-    jz frp_token_end
-    cmp ax, '"'
-    jne @F
-    cmp quoted, 0
-    je @F
-    jmp frp_token_end                       ; Closing quote ends token
-@@:
-    cmp ax, ' '
-    jne @F
-    cmp quoted, 0
-    jne @F                                  ; Space inside quotes
-    jmp frp_token_end
-@@:
-    cmp ax, '\'
-    je frp_mark_path
-    cmp ax, ':'
-    jne frp_advance
-frp_mark_path:
-    mov hasPath, 1
-frp_advance:
-    add edi, 2
-    jmp frp_scan
-
-frp_token_end:
-    mov endPtr, edi
-    mov eax, edi
-    mov afterPtr, eax
-    ; If quoted and we stopped at quote, skip it
-    cmp quoted, 0
-    je @F
-    cmp word ptr [edi], '"'
-    jne @F
-    add afterPtr, 2
-@@:
-    ; If token contains a path, do not rewrite
-    cmp hasPath, 0
-    jne frp_return_orig
-
-    ; Temporarily null-terminate token for comparison
-    mov ax, word ptr [edi]
-    mov endCh, ax
-    mov word ptr [edi], 0
-
-    push offset str_regedit
-    push esi
-    call wcscmp_ci
-    test eax, eax
-    jnz frp_match
-    push offset str_regedit_exe
-    push esi
-    call wcscmp_ci
-    test eax, eax
-    jz frp_restore_return
-
-frp_match:
-    ; Restore original character
-    mov ax, endCh
-    mov word ptr [edi], ax
-
-    ; Skip spaces after token and copy rest to temp
-    invoke skip_spaces, afterPtr
-    invoke wcscpy_p, offset g_tempBuf, eax
-
-    ; Build new command in g_cmdBuf
-    invoke wcscpy_p, offset g_cmdBuf, offset str_regedit_path
-    invoke wcslen_p, offset g_tempBuf
-    test eax, eax
-    jz frp_return_buf
-    invoke wcscat_p, offset g_cmdBuf, offset str_space
-    invoke wcscat_p, offset g_cmdBuf, offset g_tempBuf
-
-frp_return_buf:
-    mov eax, offset g_cmdBuf
-    ret
-
-frp_restore_return:
-    mov ax, endCh
-    mov word ptr [edi], ax
-frp_return_orig:
-    mov eax, lpCmd
-    ret
-FixRegeditPath endp
 
 ; ==============================================================================
 ; start - Main Entry Point
@@ -613,27 +301,74 @@ FixRegeditPath endp
 ;   8. Clean up and exit
 ;
 ; Local variables:
-;   pArgv   - Pointer to argument vector array
+;   g_argv   - Pointer to argument vector array
 ;   argc    - Argument count
 ;   msg     - Windows message structure (for GUI mode)
-;   argv1   - Pointer to first argument (for switch checking)
+;   g_argv1   - Pointer to first argument (for switch checking)
 ;
 ; Returns: Does not return (calls ExitProcess)
 ; ==============================================================================
 start proc
-    LOCAL pArgv:DWORD                       ; Pointer to argv array
-    LOCAL argc:DWORD                        ; Argument count
-    LOCAL msg:MSG                           ; Message structure for message loop
-    LOCAL argv1:DWORD                       ; First argument pointer
     LOCAL sei[60]:BYTE                      ; SHELLEXECUTEINFOW for UAC elevation
+    ; pArgv/argc/argv1/sa promoted to globals (g_argv, g_argc, g_argv1, g_sa)
+    ; so that cli.asm dispatch labels can reach them after extraction.
+    ; msg (MSG struct) lives in mode_gui's own frame now that it's a proc.
 
     cld                                     ; Clear direction flag (forward string ops)
 
+    ; Parse once before UAC so help can print without elevation and non-admin
+    ; CLI can decide whether to use the output relay.
+    invoke GetCommandLineW
+    mov ebx, eax                            ; EBX = raw command line
+    invoke CommandLineToArgvW, ebx, offset g_argc
+    mov g_argv, eax
+    test eax, eax
+    jz early_after_help
+
+    cmp g_argc,2
+    jl early_after_help
+    mov esi, g_argv
+    mov eax, [esi+4]
+    mov g_argv1, eax
+    invoke IsHelpSwitch, g_argv1
+    test eax, eax
+    jz early_after_help
+    invoke ShowUsageAndExit, g_argv
+
+early_after_help:
     ; Check if running as administrator
     invoke IsUserAnAdmin
     test eax, eax
     jnz uac_already_admin
 
+    ; Non-admin -cli path: use relay so stdout/stderr survive UAC and `>>`.
+    cmp g_argv, 0
+    je nonadmin_plain
+    cmp g_argc,2
+    jl nonadmin_plain
+    mov esi, g_argv
+    mov eax, [esi+4]
+    mov g_argv1, eax
+    invoke wcscmp_ci, g_argv1, offset str_cliSwitch1
+    test eax, eax
+    jnz nonadmin_try_relay
+    invoke wcscmp_ci, g_argv1, offset str_cliSwitch2
+    test eax, eax
+    jnz nonadmin_try_relay
+    invoke wcscmp_ci, g_argv1, offset str_cliSwitch3
+    test eax, eax
+    jz nonadmin_plain
+
+nonadmin_try_relay:
+    invoke NonAdminRelayLaunch, g_argv, g_argc, ebx
+
+nonadmin_plain:
+    cmp g_argv, 0
+    je nonadmin_plain_setup
+    invoke LocalFree, g_argv
+    mov g_argv, 0
+
+nonadmin_plain_setup:
     ; Not admin - relaunch with UAC elevation prompt
     invoke GetModuleFileNameW, 0, offset g_exePath, 260
 
@@ -684,589 +419,142 @@ uac_launch:
     invoke ExitProcess, 0
 
 uac_already_admin:
-    ; Get command line and parse into arguments
-    invoke GetCommandLineW                  ; Returns pointer to command line
-    mov ecx, eax
-    invoke CommandLineToArgvW, ecx, addr argc ; Parse into argc/argv
-    mov pArgv, eax
-    
+    cmp g_argv, 0
+    je mode_gui
+
     ; Check argument count: need at least 2 for CLI mode (exe + switch)
-    cmp argc, 2
+    cmp g_argc,2
     jl mode_gui_free                        ; Less than 2 args â†’ GUI mode
     
     ; Retrieve argv[1] (first argument after executable name)
-    mov esi, pArgv
+    mov esi, g_argv
     mov eax, [esi+4]                        ; argv[1] pointer
-    mov argv1, eax
+    mov g_argv1, eax
     
     ; Check if argv[1] == "-cli" (standard switch)
     push offset str_cliSwitch1
-    push argv1
+    push g_argv1
     call wcscmp_ci                          ; Case-insensitive comparison
     test eax, eax
     jnz mode_cli_found                      ; Non-zero = match found
 
     ; Check if argv[1] == "--cli" (GNU-style long option)
     push offset str_cliSwitch2
-    push argv1
+    push g_argv1
     call wcscmp_ci
     test eax, eax
     jnz mode_cli_found                      ; Match found
 
     ; Check if argv[1] == "cli" (bare switch without hyphens)
     push offset str_cliSwitch3
-    push argv1
+    push g_argv1
     call wcscmp_ci
     test eax, eax
     jnz mode_cli_found                      ; Match found
 
     ; Check if argv[1] matches "-install"
-    invoke wcscmp_ci, argv1, offset str_installSwitch
+    invoke wcscmp_ci, g_argv1, offset str_installSwitch
     test eax, eax
     jnz mode_install_found
 
     ; Check if argv[1] matches "-uninstall"
-    invoke wcscmp_ci, argv1, offset str_uninstallSwitch
+    invoke wcscmp_ci, g_argv1, offset str_uninstallSwitch
     test eax, eax
     jnz mode_uninstall_found
 
     ; Check if argv[1] matches "-shift"
-    invoke wcscmp_ci, argv1, offset str_shiftSwitch
+    invoke wcscmp_ci, g_argv1, offset str_shiftSwitch
     test eax, eax
     jnz mode_shift_found
 
     ; Check if argv[1] matches "-unshift"
-    invoke wcscmp_ci, argv1, offset str_unshiftSwitch
+    invoke wcscmp_ci, g_argv1, offset str_unshiftSwitch
     test eax, eax
     jnz mode_unshift_found
 
     ; No recognized switch: check if argv[1] starts with '-'
-    mov eax, argv1
+    mov eax, g_argv1
     cmp word ptr [eax], '-'
     je show_usage               ; Unknown switch, display available options
+    cmp word ptr [eax], '/'
+    je show_usage
     jmp mode_file_run           ; Not a switch, treat as file path
 
-mode_file_run:
-    ; ===== Direct File Execution Mode =====
-    ; This mode is triggered when the user right-clicks on a file (.exe or .lnk)
-    ; and selects "Run as TrustedInstaller" from the context menu.
-    ; 
-    ; The context menu passes: cmdt.exe "%1"
-    ; where %1 is the full path to the clicked file.
-    ;
-    ; Since argv[1] is not a recognized switch (-cli, -install, etc.),
-    ; we treat it as a file path and execute it directly with TrustedInstaller
-    ; privileges without showing the GUI.
-    ;
-    ; Process flow:
-    ;   1. Free the argv array (no longer needed)
-    ;   2. Get the raw command line
-    ;   3. Skip past the executable path to find the file argument
-    ;   4. Execute the file with RunAsTrustedInstaller
-    ;   5. Exit immediately (no GUI)
-    
-    invoke LocalFree, pArgv                 ; Free argv array
-    
-    ; Get the raw command line to extract the file path
-    invoke GetCommandLineW
-    mov esi, eax                            ; ESI = command line pointer
-    xor edi, edi                            ; EDI = quote state flag
-    
-    ; Skip past the executable path (which may be quoted)
-skip_exe_for_file:
-    mov ax, word ptr [esi]                  ; Read current character
-    test ax, ax                             ; Check for end of string
-    jz mode_gui                             ; No file argument found, show GUI
-    cmp ax, '"'                             ; Quote character?
-    jne @F
-    xor edi, 1                              ; Toggle quote state
-@@:
-    cmp ax, ' '                             ; Space character?
-    jne @F
-    test edi, edi                           ; Inside quotes?
-    jnz @F                                  ; Yes, continue scanning
-    add esi, 2                              ; No, space ends executable path
-    invoke skip_spaces, esi                 ; Skip whitespace after exe
-    mov esi, eax
-    jmp run_file_direct                     ; ESI now points to file path
-@@:
-    add esi, 2                              ; Move to next character
-    jmp skip_exe_for_file
 
-run_file_direct:
-    ; ESI points to the file path argument (may be quoted from context menu)
-    ; Check for .lnk shortcut and resolve before execution
-
-    ; Copy path to g_filePath, stripping surrounding quotes
-    mov edx, esi
-    cmp word ptr [edx], '"'
-    jne @F
-    add edx, 2                              ; Skip leading quote
-@@:
-    invoke wcscpy_p, offset g_filePath, edx
-
-    ; Remove trailing quote if present
-    invoke wcslen_p, offset g_filePath
-    test eax, eax
-    jz run_file_exec
-    mov edx, offset g_filePath
-    cmp word ptr [edx + eax*2 - 2], '"'
-    jne @F
-    mov word ptr [edx + eax*2 - 2], 0      ; Strip trailing quote
-    dec eax
-@@:
-    ; Need at least 4 characters for .lnk extension
-    cmp eax, 4
-    jl run_file_exec
-
-    ; Check if last 4 characters match ".lnk"
-    mov edx, offset g_filePath
-    lea ecx, [edx + eax*2 - 8]
-    invoke wcscmp_ci, ecx, offset str_extLnk_m
-    test eax, eax
-    jz run_file_exec                        ; Not .lnk, execute directly
-
-    ; Clear temporary buffer for shortcut arguments
-    push edi
-    mov edi, offset g_tempBuf
-    xor eax, eax
-    mov ecx, 260
-    rep stosd
-    pop edi
-
-    ; Resolve .lnk target path and embedded arguments
-    invoke ResolveLnkPath, offset g_filePath, offset g_cmdBuf, offset g_tempBuf
-    test eax, eax
-    jz run_file_exec                        ; Resolution failed, try direct
-
-    ; Build command line from resolved target and arguments
-    invoke wcslen_p, offset g_cmdBuf
-    test eax, eax
-    jz run_file_lnk_args
-
-    invoke wcslen_p, offset g_tempBuf
-    test eax, eax
-    jz run_file_lnk_cmd                     ; No embedded args, run target only
-
-    invoke wcscat_p, offset g_cmdBuf, offset str_space
-    invoke wcscat_p, offset g_cmdBuf, offset g_tempBuf
-    jmp run_file_lnk_cmd
-
-run_file_lnk_args:
-    ; No target path, use embedded arguments only
-    invoke wcscpy_p, offset g_cmdBuf, offset g_tempBuf
-
-run_file_lnk_cmd:
-    invoke FixRegeditPath, offset g_cmdBuf
-    invoke RunAsTrustedInstaller, eax, 0
-    invoke ExitProcess, 0
-
-run_file_exec:
-    ; Not a .lnk file or resolution failed, execute as-is
-    invoke FixRegeditPath, esi
-    invoke RunAsTrustedInstaller, eax, 0
-    invoke ExitProcess, 0
-
-mode_cli_found:
-    ; CLI mode detected, need at least 3 args (exe, switch, command)
-    cmp argc, 3
-    jl cli_no_cmd_free                      ; Not enough args for command
-
-    ; Check if argv[2] is "-new" (new console window flag)
-    mov esi, pArgv
-    mov eax, [esi+8]                        ; argv[2] pointer
-    invoke wcscmp_ci, eax, offset str_newSwitch
-    test eax, eax
-    jz cli_no_new_flag                      ; Zero = no match, not -new
-
-    ; -new flag found: need argc >= 4 (exe, switch, -new, command)
-    cmp argc, 4
-    jl cli_no_cmd_free                      ; Not enough args
-    mov g_useNewConsole, 1                  ; Set new console flag
-    jmp cli_free_and_setup
-
-cli_no_new_flag:
-    mov g_useNewConsole, 0                  ; No new console, inherit current
-
-cli_free_and_setup:
-    invoke LocalFree, pArgv                 ; Free argv array
-    jmp mode_cli_setup                      ; Continue to CLI processing
-    
 mode_install_found:
-    invoke LocalFree, pArgv
+    invoke LocalFree, g_argv
     call InstallContextMenu
     invoke ExitProcess, 0
 
 mode_uninstall_found:
-    invoke LocalFree, pArgv
+    invoke LocalFree, g_argv
     call UninstallContextMenu
     invoke ExitProcess, 0
 
 mode_shift_found:
-    invoke LocalFree, pArgv
+    invoke LocalFree, g_argv
     call InstallShift
     invoke ExitProcess, 0
 
 mode_unshift_found:
-    invoke LocalFree, pArgv
+    invoke LocalFree, g_argv
     call UninstallShift
     invoke ExitProcess, 0
 
 show_usage:
     ; Unknown switch detected, display available options and exit
-    invoke LocalFree, pArgv
-
-    ; Attach to parent console (ATTACH_PARENT_PROCESS)
-    invoke AttachConsole, 0FFFFFFFFh
-    test eax, eax
-    jz show_usage_exit
-
-    ; Get stdout handle (STD_OUTPUT_HANDLE)
-    invoke GetStdHandle, 0FFFFFFF5h
-    mov ebx, eax
-
-    ; Calculate usage text length and write to console
-    invoke wcslen_p, offset str_usage
-    mov ecx, eax
-    invoke WriteConsoleW, ebx, offset str_usage, ecx, addr argc, 0
-
-show_usage_exit:
-    invoke ExitProcess, 1
+    invoke ShowUsageAndExit, g_argv
 
 mode_gui_free:
-    invoke LocalFree, pArgv                 ; Free argv and go to GUI mode
-    jmp mode_gui
+    invoke LocalFree, g_argv                 ; Free argv and go to GUI mode
+    invoke mode_gui                          ; never returns (ExitProcess inside)
+    ret                                      ; unreachable but keeps unwind clean
+start endp
 
-cli_no_cmd_free:
-    invoke LocalFree, pArgv                 ; Insufficient args for CLI
-    invoke ExitProcess, 1                   ; Exit with error code
+; ==============================================================================
+; mode_gui - GUI Mode entry point
+;
+; Purpose: Creates the main application window and runs the message loop
+;          until WM_QUIT (or ESC). Reached either from start's dispatch when
+;          no recognized switch was supplied, or from cli.asm's
+;          skip_exe_for_file when the file-run path had no file argument.
+;
+; Parameters: None
+;
+; Returns: Never (every exit path goes through ExitProcess).
+; ==============================================================================
+mode_gui proc
+    LOCAL msg:MSG
 
-mode_cli_setup:
-    ; Re-parse command line manually to extract the command portion
-    ; This is necessary because we need the exact command string as entered,
-    ; not split by CommandLineToArgvW
-    
-    invoke GetCommandLineW
-    mov esi, eax                            ; ESI = raw command line pointer
-    xor ecx, ecx                            ; ECX = unused
-    mov edi, 0                              ; EDI = quote flag (inside quotes?)
-    
-    ; Skip past executable name (may be quoted)
-skip_exe_loop:
-    mov ax, word ptr [esi]                  ; Read current character
-    test ax, ax                             ; Check for end of string
-    jz cli_failed_setup
-    cmp ax, '"'                             ; Toggle quote flag on quote char
-    jne @F
-    xor edi, 1                              ; Flip quote state
-@@:
-    cmp ax, ' '                             ; Check for space
-    jne @F
-    test edi, edi                           ; Are we inside quotes?
-    jnz @F                                  ; Yes, keep searching
-    add esi, 2                              ; Space found outside quotes
-    jmp skip_switch_init                    ; Done skipping executable
-@@:
-    add esi, 2                              ; Move to next character
-    jmp skip_exe_loop
-
-skip_switch_init:
-    invoke skip_spaces, esi                 ; Skip whitespace after executable
-    mov esi, eax
-    
-    ; Skip the CLI switch (we already validated it exists)
-    mov edi, 0                              ; Reset quote flag
-skip_switch_loop:
-    mov ax, word ptr [esi]                  ; Read character
-    test ax, ax
-    jz cli_failed_setup                     ; Unexpected end of string
-    cmp ax, ' '                             ; Find space after switch
-    jne @F
-    add esi, 2
-    jmp after_switch                        ; Switch done
-@@:
-    add esi, 2                              ; Continue through switch
-    jmp skip_switch_loop
-
-after_switch:
-    invoke skip_spaces, esi                 ; Skip whitespace after switch
-    mov esi, eax
-
-    ; If -new flag is present, skip it
-    cmp g_useNewConsole, 0
-    je run_command                          ; No -new flag, ESI points to command
-
-skip_new_token:
-    mov ax, word ptr [esi]                  ; Skip past -new token
-    test ax, ax
-    jz cli_failed_setup
-    cmp ax, ' '                             ; Find space after -new
-    jne @F
-    add esi, 2
-    jmp run_command                         ; Done skipping -new
-@@:
-    add esi, 2
-    jmp skip_new_token
-
-run_command:
-    invoke skip_spaces, esi                 ; Skip any remaining whitespace
-    mov esi, eax                            ; ESI now points to actual command
-
-    ; Check if command is a .lnk file (needs at least 4 chars for ".lnk")
-    invoke wcslen_p, esi
-    mov ecx, eax                            ; ECX = command string length
-    cmp ecx, 4
-    jl run_no_lnk                           ; Too short to be .lnk
-    
-    ; Find the first space or end of string to get just the executable path
-    ; This separates the .lnk path from any additional arguments
-    mov edi, esi                            ; EDI = search pointer
-    xor ebx, ebx                            ; EBX = space position (0 = not found)
-    xor edx, edx                            ; EDX = quote flag
-find_space_or_quote:
-    mov ax, word ptr [edi]                  ; Read character
-    test ax, ax                             ; End of string?
-    jz check_lnk_ext
-    cmp ax, '"'                             ; Quote character?
-    jne @F
-    xor edx, 1                              ; Toggle quote state
-@@:
-    cmp ax, ' '                             ; Space character?
-    jne @F
-    test edx, edx                           ; Inside quotes?
-    jnz @F                                  ; Yes, ignore this space
-    mov ebx, edi                            ; Save first space position
-    jmp check_lnk_ext                        ; Stop at first space
-@@:
-    add edi, 2
-    jmp find_space_or_quote
-
-check_lnk_ext:
-    ; Check if we found a space (command has additional arguments)
-    test ebx, ebx
-    jz check_whole_path                     ; No space, check entire string
-
-    ; Space found: extract path portion and check for .lnk extension
-    ; Clean up quote characters around the path
-    mov ecx, ebx                            ; ECX = end position
-    cmp word ptr [ecx-2], '"'               ; Trailing quote before space?
-    jne @F
-    sub ecx, 2                              ; Exclude trailing quote
-@@:
-    mov edx, esi                            ; EDX = start position
-    cmp word ptr [edx], '"'                 ; Leading quote?
-    jne @F
-    add edx, 2                              ; Exclude leading quote
-@@:
-    sub ecx, edx                            ; ECX = path length in bytes
-    shr ecx, 1                              ; Convert to character count
-    cmp ecx, 4                              ; Long enough for .lnk?
-    jl run_no_lnk
-
-    ; Check last 4 characters for ".lnk" extension
-    lea edi, [edx + ecx*2 - 8]              ; Point to last 4 chars
-    invoke wcscmp_ci, edi, offset str_extLnk_m
-    test eax, eax
-    jz run_no_lnk                           ; Not .lnk, run as-is
-
-    ; .lnk file with arguments: split into path and args
-    push esi                                ; Save original command pointer
-    push ebx                                ; Save space position
-
-    ; Recompute clean start/length for path copy (EDX was clobbered)
-    mov edx, esi
-    cmp word ptr [edx], '"'
-    jne @F
-    add edx, 2                              ; Skip leading quote
-@@:
-    mov ecx, ebx                            ; End position
-    cmp word ptr [ecx-2], '"'
-    jne @F
-    sub ecx, 2                              ; Skip trailing quote
-@@:
-    sub ecx, edx                            ; Length in bytes
-    shr ecx, 1                              ; Length in characters
-    
-    ; Copy path to g_filePath
-    mov esi, edx
-    mov edi, offset g_filePath
-    rep movsw                               ; Copy ECX wide characters
-    mov word ptr [edi], 0                   ; Null terminate
-    
-    ; Extract arguments portion (after the space)
-    pop ebx                                 ; Restore space position
-    add ebx, 2                              ; Skip past space
-    invoke skip_spaces, ebx
-    mov esi, eax
-    invoke wcscpy_p, offset g_argsBuf, esi  ; Copy args to buffer
-    
-    ; Zero out temporary buffer for shortcut arguments
-    push edi
-    mov edi, offset g_tempBuf
-    xor eax, eax
-    mov ecx, 260
-    rep stosd                               ; Clear 260 DWORDs (1040 bytes)
-    pop edi
-    
-    ; Resolve .lnk to get target path and embedded arguments
-    invoke ResolveLnkPath, offset g_filePath, offset g_cmdBuf, offset g_tempBuf
-    test eax, eax
-    pop esi                                 ; Restore original command pointer
-    jz run_no_lnk                           ; Resolution failed, use original
-    
-    ; Check if target path is empty
-    invoke wcslen_p, offset g_cmdBuf
-    test eax, eax
-    jz use_args_only                        ; No target, just use args
-    
-    ; Append space after target path
-    mov edi, offset g_cmdBuf
-    lea edi, [edi + eax*2]                  ; Point to end of target path
-    mov word ptr [edi], ' '                 ; Add space
-    add edi, 2
-    mov word ptr [edi], 0                   ; Null terminate
-    
-use_args_only:
-    ; Append embedded shortcut arguments
-    invoke wcscat_p, offset g_cmdBuf, offset g_tempBuf
-    
-    ; Check if we have additional command-line arguments
-    invoke wcslen_p, offset g_argsBuf
-    test eax, eax
-    jz run_resolved                         ; No additional args
-    
-    ; Append space and additional arguments
-    invoke wcscat_p, offset g_cmdBuf, offset str_space
-    invoke wcscat_p, offset g_cmdBuf, offset g_argsBuf
-    jmp run_resolved
-
-check_whole_path:
-    ; No space found - check entire command string for .lnk extension
-    ; ECX still contains length from wcslen_p earlier
-    mov edx, esi                            ; EDX = start of command
-    mov edi, ecx                            ; EDI = length
-    
-    ; Strip surrounding quotes
-    cmp word ptr [edx], '"'
-    jne @F
-    add edx, 2                              ; Skip leading quote
-    dec edi                                 ; Reduce length
-@@:
-    cmp edi, 1
-    jl run_no_lnk                           ; Too short after quote removal
-    cmp word ptr [edx + edi*2 - 2], '"'
-    jne @F
-    dec edi                                 ; Skip trailing quote
-@@:
-    cmp edi, 4                              ; Long enough for .lnk?
-    jl run_no_lnk
-
-    ; Check last 4 characters for .lnk extension
-    lea eax, [edx + edi*2 - 8]
-    invoke wcscmp_ci, eax, offset str_extLnk_m
-    test eax, eax
-    jz run_no_lnk                           ; Not .lnk
-
-    ; Zero temporary buffer for shortcut arguments
-    push edi                                ; Preserve length
-    mov edi, offset g_tempBuf
-    xor eax, eax
-    mov ecx, 260
-    rep stosd                               ; Clear buffer
-    pop edi                                 ; Restore length
-
-    ; Copy path to g_filePath (recompute clean start after EDX clobber)
-    mov edx, esi
-    cmp word ptr [edx], '"'
-    jne @F
-    add edx, 2                              ; Skip leading quote
-@@:
-    push esi                                ; Save original pointer
-    mov esi, edx
-    mov ecx, edi                            ; ECX = length to copy
-    mov edi, offset g_filePath
-    rep movsw                               ; Copy path
-    mov word ptr [edi], 0                   ; Null terminate
-    pop esi                                 ; Restore original pointer
-
-    ; Resolve .lnk shortcut
-    invoke ResolveLnkPath, offset g_filePath, offset g_cmdBuf, offset g_tempBuf
-    test eax, eax
-    jz run_no_lnk                           ; Resolution failed
-    
-    ; Check if target path is empty
-    invoke wcslen_p, offset g_cmdBuf
-    test eax, eax
-    jz use_lnk_args_only                    ; No target, just use args
-    
-    ; Append space after target path
-    mov edi, offset g_cmdBuf
-    lea edi, [edi + eax*2]
-    mov word ptr [edi], ' '
-    add edi, 2
-    mov word ptr [edi], 0
-    
-use_lnk_args_only:
-    ; Append embedded shortcut arguments
-    invoke wcscat_p, offset g_cmdBuf, offset g_tempBuf
-    jmp run_resolved
-    
-run_resolved:
-    ; Execute resolved .lnk target with all arguments
-    invoke FixRegeditPath, offset g_cmdBuf
-    invoke RunAsTrustedInstaller, eax, g_useNewConsole
-    jmp run_check_result
-    
-run_no_lnk:
-    ; Not a .lnk file - execute command directly as entered
-    invoke FixRegeditPath, esi
-    invoke RunAsTrustedInstaller, eax, g_useNewConsole
-    
-run_check_result:
-    test eax, eax
-    jz cli_failed                           ; Execution failed
-
-    invoke ExitProcess, 0                   ; Success exit
-
-cli_failed_setup:
-cli_failed:
-    invoke ExitProcess, 1                   ; Error exit
-    
-mode_gui:
-    ; GUI mode: create window and enter message loop
-    invoke GetModuleHandleW, 0              ; Get application instance
+    invoke GetModuleHandleW, 0
     mov g_hInstance, eax
-    invoke CreateMainWindow, eax            ; Create main window
+    invoke CreateMainWindow, eax
     test eax, eax
-    jz exit_app                             ; Window creation failed
-    
-msg_loop:
-    ; Standard Windows message loop
+    jz gui_exit
+
+gui_msg_loop:
     invoke GetMessageW, addr msg, 0, 0, 0
     test eax, eax
-    jz exit_app                             ; WM_QUIT received
-    
-    ; Check for ESC key to exit application
+    jz gui_exit                             ; WM_QUIT received
+
     cmp [msg.message], WM_KEYDOWN
-    jne msg_not_esc
+    jne gui_msg_not_esc
     cmp [msg.wParam], VK_ESCAPE
-    je exit_app                             ; ESC pressed, exit
-    
-msg_not_esc:
-    ; Process dialog messages (for tab key navigation, etc.)
+    je gui_exit                             ; ESC exits
+
+gui_msg_not_esc:
     invoke IsDialogMessageW, g_hwndMain, addr msg
     test eax, eax
-    jnz msg_loop                            ; Message was processed
-    
-    ; Standard message translation and dispatch
+    jnz gui_msg_loop                        ; Message consumed by IsDialogMessageW
+
     invoke TranslateMessage, addr msg
     invoke DispatchMessageW, addr msg
-    jmp msg_loop
-    
-exit_app:
-    invoke ExitProcess, 0                   ; Normal exit
-    ret
-start endp
+    jmp gui_msg_loop
+
+gui_exit:
+    invoke ExitProcess, 0
+    ret                                     ; unreachable
+mode_gui endp
 
 ; ==============================================================================
 ; InstallContextMenu - Register Explorer context menu entries
@@ -1294,369 +582,5 @@ start endp
 ;
 ; Returns: None (ignores errors to allow partial installation)
 ; ==============================================================================
-InstallContextMenu proc uses ebx esi edi
-    LOCAL hKey:DWORD
-    LOCAL dwDisp:DWORD
-
-    ; Get our exe path for command strings
-    invoke GetModuleFileNameW, 0, offset g_exePath, 260
-
-    ; Build directory command string: "<exepath>" -cli -new cmd.exe /k cd /d "%V"
-    invoke wcscpy_p, offset g_tempBuf, offset str_cmdQuote
-    invoke wcscat_p, offset g_tempBuf, offset g_exePath
-    invoke wcscat_p, offset g_tempBuf, offset str_cmdSuffixDir
-
-    ; Calculate string byte sizes (characters + null terminator, then * 2 for wide chars)
-    invoke wcslen_p, offset g_tempBuf
-    inc eax
-    shl eax, 1
-    mov ebx, eax               ; EBX = directory command string byte size
-
-    invoke wcslen_p, offset str_ctxTextDir
-    inc eax
-    shl eax, 1
-    push eax                   ; Save directory menu text byte size on stack
-
-    invoke wcslen_p, offset str_iconPath
-    inc eax
-    shl eax, 1
-    mov esi, eax               ; ESI = icon path byte size (shell32.dll,104)
-
-    ; --- Directory\Background\shell\CMDT (parent key) ---
-    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyBg, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
-    test eax, eax
-    jnz ctx_install_done_pop   ; Error creating key
-
-    ; Set default value = "Open CMD as TrustedInstaller"
-    pop edi                    ; EDI = directory menu text byte size
-    push edi                   ; Save it back on stack
-    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset str_ctxTextDir, edi
-    
-    ; Set Icon = shell32.dll,104
-    invoke RegSetValueExW, hKey, offset str_iconVal, 0, REG_SZ, offset str_iconPath, esi
-    invoke RegCloseKey, hKey
-
-    ; --- Directory\Background\shell\CMDT\command (command subkey) ---
-    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdBg, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
-    test eax, eax
-    jnz ctx_install_done_pop
-
-    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset g_tempBuf, ebx
-    invoke RegCloseKey, hKey
-
-    ; --- Directory\shell\CMDT (parent key) ---
-    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyDir, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
-    test eax, eax
-    jnz ctx_install_done_pop
-
-    pop edi                    ; EDI = directory menu text byte size
-    push edi                   ; Save it back
-    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset str_ctxTextDir, edi
-    invoke RegSetValueExW, hKey, offset str_iconVal, 0, REG_SZ, offset str_iconPath, esi
-    invoke RegCloseKey, hKey
-
-    ; --- Directory\shell\CMDT\command (command subkey) ---
-    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdDir, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
-    test eax, eax
-    jnz ctx_install_done_pop
-
-    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset g_tempBuf, ebx
-    invoke RegCloseKey, hKey
-
-    ; Build file command string: "<exepath>" "%1"
-    invoke wcscpy_p, offset g_tempBuf, offset str_cmdQuote
-    invoke wcscat_p, offset g_tempBuf, offset g_exePath
-    invoke wcscat_p, offset g_tempBuf, offset str_cmdSuffixFile
-
-    ; Calculate file command string byte size
-    invoke wcslen_p, offset g_tempBuf
-    inc eax
-    shl eax, 1
-    mov ebx, eax               ; EBX = file command string byte size
-
-    ; Calculate file menu text byte size
-    invoke wcslen_p, offset str_ctxTextFile
-    inc eax
-    shl eax, 1
-    mov edi, eax               ; EDI = file menu text byte size
-
-    ; --- exefile\shell\CMDT (parent key) ---
-    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyExe, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
-    test eax, eax
-    jnz ctx_install_done_pop
-
-    ; Set default value = "Run as TrustedInstaller"
-    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset str_ctxTextFile, edi
-    
-    ; Set Icon = shell32.dll,104
-    invoke RegSetValueExW, hKey, offset str_iconVal, 0, REG_SZ, offset str_iconPath, esi
-    invoke RegCloseKey, hKey
-
-    ; --- exefile\shell\CMDT\command (command subkey) ---
-    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdExe, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
-    test eax, eax
-    jnz ctx_install_done_pop
-
-    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset g_tempBuf, ebx
-    invoke RegCloseKey, hKey
-
-    ; --- lnkfile\shell\CMDT (parent key) ---
-    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyLnk, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
-    test eax, eax
-    jnz ctx_install_done_pop
-
-    ; Set default value = "Run as TrustedInstaller"
-    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset str_ctxTextFile, edi
-    
-    ; Set Icon = shell32.dll,104
-    invoke RegSetValueExW, hKey, offset str_iconVal, 0, REG_SZ, offset str_iconPath, esi
-    invoke RegCloseKey, hKey
-
-    ; --- lnkfile\shell\CMDT\command (command subkey) ---
-    invoke RegCreateKeyExW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdLnk, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
-    test eax, eax
-    jnz ctx_install_done_pop
-
-    invoke RegSetValueExW, hKey, 0, 0, REG_SZ, offset g_tempBuf, ebx
-    invoke RegCloseKey, hKey
-
-ctx_install_done_pop:
-    pop eax                    ; Clean up stack (directory menu text byte size)
-ctx_install_done:
-    ret
-InstallContextMenu endp
-
-; ==============================================================================
-; UninstallContextMenu - Remove Explorer context menu entries
-;
-; Purpose: Deletes all CMDT registry keys from HKEY_CLASSES_ROOT that were
-;          created by InstallContextMenu. Removes context menu entries for
-;          directories, executable files, and shortcut files.
-;
-; Registry locations deleted (in order, children first):
-;   - Directory\Background\shell\CMDT\command
-;   - Directory\Background\shell\CMDT
-;   - Directory\shell\CMDT\command
-;   - Directory\shell\CMDT
-;   - exefile\shell\CMDT\command
-;   - exefile\shell\CMDT
-;   - lnkfile\shell\CMDT\command
-;   - lnkfile\shell\CMDT
-;
-; Parameters: None
-;
-; Returns: None (ignores deletion errors)
-;
-; Note: Keys must be deleted in order from leaf nodes to parent nodes,
-;       as Windows registry does not allow deletion of keys with subkeys.
-; ==============================================================================
-UninstallContextMenu proc
-    ; Delete Directory\Background entries (leaf keys first)
-    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdBg
-    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyBg
-    
-    ; Delete Directory entries (leaf keys first)
-    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdDir
-    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyDir
-    
-    ; Delete exefile entries (leaf keys first)
-    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdExe
-    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyExe
-    
-    ; Delete lnkfile entries (leaf keys first)
-    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyCmdLnk
-    invoke RegDeleteKeyW, HKEY_CLASSES_ROOT, offset str_ctxKeyLnk
-    ret
-UninstallContextMenu endp
-
-; ==============================================================================
-; GetExeFileName - Extract filename from g_exePath
-;
-; Purpose: Scans g_exePath for the last backslash and returns a pointer
-;          to the character after it (the filename portion).
-;          Must call GetModuleFileNameW into g_exePath first.
-;
-; Parameters: None
-;
-; Returns: EAX = pointer to filename within g_exePath
-;
-; Modifies: EAX, ECX
-; ==============================================================================
-GetExeFileName proc
-    mov eax, offset g_exePath
-    mov ecx, eax
-@@:
-    cmp word ptr [ecx], 0
-    je @F
-    cmp word ptr [ecx], '\'
-    jne gef_next
-    lea eax, [ecx+2]
-gef_next:
-    add ecx, 2
-    jmp @B
-@@:
-    ret
-GetExeFileName endp
-
-; ==============================================================================
-; RunPsCommand - Execute a PowerShell command and wait for completion
-;
-; Purpose: Runs powershell.exe with given parameters using ShellExecuteExW
-;          with SW_HIDE, waits for the process to finish, then cleans up.
-;
-; Parameters:
-;   lpParams - Pointer to wide string with PowerShell parameters
-;
-; Returns: None
-;
-; Stack frame: 60 bytes SHELLEXECUTEINFOW + locals
-; ==============================================================================
-RunPsCommand proc uses edi lpParams:DWORD
-    LOCAL sei[60]:BYTE
-    LOCAL hProc:DWORD
-
-    ; Zero SHELLEXECUTEINFOW (60 bytes)
-    lea edi, sei
-    xor eax, eax
-    mov ecx, 15
-    rep stosd
-
-    ; Fill SHELLEXECUTEINFOW fields
-    lea edi, sei
-    mov dword ptr [edi], 60                         ; cbSize
-    mov dword ptr [edi+4], 00000040h                ; fMask = SEE_MASK_NOCLOSEPROCESS
-    mov dword ptr [edi+16], offset str_powershell   ; lpFile = "powershell.exe"
-    mov eax, lpParams
-    mov dword ptr [edi+20], eax                     ; lpParameters
-    mov dword ptr [edi+28], SW_HIDE                 ; nShow = 0
-
-    ; Launch PowerShell
-    invoke ShellExecuteExW, edi
-    test eax, eax
-    jz ps_done
-
-    ; Get process handle
-    lea edi, sei
-    mov eax, dword ptr [edi+56]                     ; hProcess
-    mov hProc, eax
-    test eax, eax
-    jz ps_done
-
-    ; Wait for PowerShell to complete
-    invoke WaitForSingleObject, hProc, 0FFFFFFFFh
-
-    ; Close process handle
-    invoke CloseHandle, hProc
-
-ps_done:
-    ret
-RunPsCommand endp
-
-; ==============================================================================
-; InstallShift - Set sethc.exe IFEO debugger hook
-;
-; Purpose: Creates an Image File Execution Options registry entry for sethc.exe
-;          that redirects execution to CMDT. When Sticky Keys is triggered
-;          (5x Shift at login screen), CMDT launches cmd.exe as TrustedInstaller
-;          instead of sethc.exe. Also adds Defender process exclusions for both
-;          the exe itself and cmd.exe.
-;
-; Registry location:
-;   HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\
-;     Image File Execution Options\sethc.exe
-;   Value: Debugger = <exename> -cli -new cmd.exe
-;
-; Parameters: None (uses global g_exePath and g_cmdBuf buffers)
-;
-; Returns: None
-; ==============================================================================
-InstallShift proc uses ebx esi edi
-    LOCAL hKey:DWORD
-    LOCAL dwDisp:DWORD
-
-    ; Get our exe path
-    invoke GetModuleFileNameW, 0, offset g_exePath, 260
-
-    ; Get just the filename (e.g. "cmdt.exe")
-    call GetExeFileName
-    mov esi, eax
-
-    ; Build PS add exclusion command in g_cmdBuf:
-    ; -NoProfile -c "Add-MpPreference -ExclusionProcess <filename>,cmd.exe -Force"
-    invoke wcscpy_p, offset g_cmdBuf, offset str_psAddPfx
-    invoke wcscat_p, offset g_cmdBuf, esi
-    invoke wcscat_p, offset g_cmdBuf, offset str_psSuffix
-
-    ; Add Defender process exclusions
-    invoke RunPsCommand, offset g_cmdBuf
-
-    ; Build IFEO debugger value in g_tempBuf: <full_path> -cli -new cmd.exe
-    invoke wcscpy_p, offset g_tempBuf, offset g_exePath
-    invoke wcscat_p, offset g_tempBuf, offset str_shiftSuffix
-
-    ; Calculate byte size (chars+1) * 2
-    invoke wcslen_p, offset g_tempBuf
-    inc eax
-    shl eax, 1
-    mov ebx, eax
-
-    ; Create/open IFEO sethc.exe key under HKLM
-    invoke RegCreateKeyExW, HKEY_LOCAL_MACHINE, offset str_ifeoKey, 0, 0, 0, KEY_WRITE, 0, addr hKey, addr dwDisp
-    test eax, eax
-    jnz shift_install_done
-
-    ; Set Debugger = command string
-    invoke RegSetValueExW, hKey, offset str_debuggerVal, 0, REG_SZ, offset g_tempBuf, ebx
-    invoke RegCloseKey, hKey
-
-shift_install_done:
-    ret
-InstallShift endp
-
-; ==============================================================================
-; UninstallShift - Remove sethc.exe IFEO Debugger value
-;
-; Purpose: Deletes only the "Debugger" value from the Image File Execution
-;          Options\sethc.exe registry key, restoring normal Sticky Keys
-;          behavior. Also removes Defender process exclusions for both the
-;          exe itself and cmd.exe.
-;
-; Parameters: None
-;
-; Returns: None
-; ==============================================================================
-UninstallShift proc uses esi
-    LOCAL hKey:DWORD
-
-    ; Open IFEO sethc.exe key
-    invoke RegOpenKeyExW, HKEY_LOCAL_MACHINE, offset str_ifeoKey, 0, KEY_WRITE, addr hKey
-    test eax, eax
-    jnz unshift_ps
-
-    ; Delete only the Debugger value
-    invoke RegDeleteValueW, hKey, offset str_debuggerVal
-
-    ; Close key
-    invoke RegCloseKey, hKey
-
-unshift_ps:
-    ; Get our exe path for dynamic filename
-    invoke GetModuleFileNameW, 0, offset g_exePath, 260
-
-    ; Get just the filename
-    call GetExeFileName
-    mov esi, eax
-
-    ; Build PS remove exclusion command in g_cmdBuf:
-    ; -NoProfile -c "Remove-MpPreference -ExclusionProcess <filename>,cmd.exe -Force"
-    invoke wcscpy_p, offset g_cmdBuf, offset str_psRemPfx
-    invoke wcscat_p, offset g_cmdBuf, esi
-    invoke wcscat_p, offset g_cmdBuf, offset str_psSuffix
-
-    ; Remove Defender process exclusions
-    invoke RunPsCommand, offset g_cmdBuf
-
-    ret
-UninstallShift endp
 
 end start

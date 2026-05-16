@@ -27,7 +27,7 @@ if (-not (Test-Path $BinDir)) {
     New-Item -ItemType Directory -Path $BinDir | Out-Null
 }
 
-$FILES_X86 = @("main", "token", "process", "window")
+$FILES_X86 = @("main", "token", "process", "window", "strutil", "help", "install", "relay", "cli")
 $FILES_X64 = @("main", "token", "process", "window", "strutil", "help", "install", "relay", "cli")
 $LIBS = @("kernel32.lib", "user32.lib", "advapi32.lib", "shlwapi.lib", "shell32.lib", "gdi32.lib", "comdlg32.lib", "userenv.lib", "ole32.lib", "dwmapi.lib", "OleAut32.lib")
 $BuildSuccess = $true
@@ -49,7 +49,7 @@ if ($LASTEXITCODE -ne 0) {
         }
     }
     if ($BuildSuccess) {
-        $linkArgs = @("x86\main.obj", "x86\token.obj", "x86\process.obj", "x86\window.obj", "cmdt_x86.res", "/subsystem:windows", "/entry:start@0", "/Brepro", "/out:bin\cmdt_x86.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH32_UM", "/LIBPATH:$LIBPATH32_UCRT") + $LIBS
+        $linkArgs = @("x86\main.obj", "x86\token.obj", "x86\process.obj", "x86\window.obj", "x86\strutil.obj", "x86\help.obj", "x86\install.obj", "x86\relay.obj", "x86\cli.obj", "cmdt_x86.res", "/subsystem:windows", "/entry:start@0", "/Brepro", "/out:bin\cmdt_x86.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH32_UM", "/LIBPATH:$LIBPATH32_UCRT") + $LIBS
         & $LINK32 $linkArgs
         if ($LASTEXITCODE -ne 0) { 
             $BuildSuccess = $false 

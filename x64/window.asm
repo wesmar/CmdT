@@ -1345,13 +1345,20 @@ lm_loop:
     jmp lm_loop
 
 lm_setsel:
-    ; Select first item in ComboBox
-    xor r9d, r9d                ; Index 0
+    ; Deselect all items — leave the edit field empty on startup
+    mov r9d, -1
     xor r8d, r8d
     mov edx, CB_SETCURSEL
     mov rcx, g_hwndEdit
     sub rsp, 32
     call SendMessageW
+    add rsp, 32
+
+    ; Explicitly clear the edit field (CBS_DROPDOWN retains text even with no selection)
+    lea rdx, g_cmdBuf           ; g_cmdBuf is zero-initialized (BSS), acts as empty wide string
+    mov rcx, g_hwndEdit
+    sub rsp, 32
+    call SetWindowTextW
     add rsp, 32
 
     ; Close registry key
@@ -1368,7 +1375,6 @@ lm_done:
     pop rbx
     ret
 LoadMRU endp
-
 ; ==============================================================================
 ; SaveMRU - Save Command to Most Recently Used List
 ;

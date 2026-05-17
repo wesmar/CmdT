@@ -603,6 +603,43 @@ CMDT requires Administrator privileges to run. It does not bypass UAC — the us
 ## Changelog
 
 <details open>
+<summary><strong>17.05.2026 — interactive-shell guard, x86 console handling synced with x64</strong></summary>
+
+Two follow-up fixes on top of the 16.05.2026 release after non-admin testing in real shells.
+
+### Fix: `cmdt -cli cmd` / `powershell` / `pwsh` from a non-admin shell
+
+The temp-file relay introduced on 16.05.2026 is designed for *non-interactive* commands — it spawns the elevated child with `CREATE_NO_WINDOW` and captures stdout/stderr into a temp file. Pointing it at an interactive shell (`cmd`, `powershell`, `pwsh`) was incompatible: the child had no console to draw a prompt on, no stdin to read from, and the parent's `WaitForSingleObject` blocked the caller indefinitely. The user saw a flash and no shell.
+
+`NonAdminRelayLaunch` now declines the relay when argv looks like exactly `cmdt -cli <shell>` (argc == 3 and `argv[2]` matches one of `cmd` / `cmd.exe` / `powershell` / `powershell.exe` / `pwsh` / `pwsh.exe`, case-insensitive). On decline, the caller falls through to plain UAC self-elevation (`ShellExecuteExW("runas")`), which spawns a real, visible console for the TrustedInstaller shell. The original cmd's prompt returns immediately — important for batch scripts that invoke `cmdt -cli cmd /c …` patterns and need control back.
+
+Anything with extra arguments (`cmd /c dir`, `powershell -Command Get-Process`) still goes through the relay so its output is streamed back to the caller. The decline list lives next to its own pointer table in `relay.asm` so adding more interactive shells is one line.
+
+### Sync: x86 console handling brought in line with x64
+
+The 16.05.2026 fix for `AttachConsole` clobbering inherited std handles and the `NudgeConsolePrompt` helper that posts a fake VK_RETURN to redraw cmd's prompt both landed on x64 only. On x86, `cmdt_x86.exe -cli net session` with no redirect produced no output (`GetStdHandle(STD_OUTPUT_HANDLE)` returned `NULL` because `cmdt_x86.exe` is `/subsystem:windows`, so cmd.exe doesn't wire up the console handle for it), and the prompt-redraw nudge only ran for the help-banner path, not the relay path.
+
+x86 now mirrors x64:
+
+- `start` (in `main.asm`) does the same early `AttachConsole(ATTACH_PARENT_PROCESS)` guarded by `GetStdHandle` + `GetFileType` — attach when stdout is `NULL`/`INVALID` or `FILE_TYPE_CHAR`, leave alone for `FILE_TYPE_DISK` / `FILE_TYPE_PIPE` so redirects and pipes keep their inherited handles.
+- `NudgeConsolePrompt` extracted into `help.asm` as a proper proc (was previously inlined inside `ShowUsageAndExit`), and `relay.asm` calls it before `DeleteFileW` so the cursor doesn't sit idle one line above the new prompt after relay output finishes.
+
+### Cases now covered end-to-end on both architectures
+
+| Command | Behavior |
+|---|---|
+| `cmdt -cli cmd` (non-admin) | Declines relay → plain UAC → new TI cmd window |
+| `cmdt -cli cmd /c dir` (non-admin) | Relay fires, output streams to caller console |
+| `cmdt -cli net session` (non-admin) | Relay fires, output streams to caller console |
+| `cmdt -cli net session > out.txt` (non-admin) | Relay fires, writes to `out.txt` |
+| `cmdt -cli net session \| findstr X` (non-admin) | Relay fires, writes to pipe |
+| `cmdt -cli cmd -new` (non-admin) | `-new` declines relay (preexisting) → plain UAC → new console |
+
+The relay declines only when it has no useful captured-output story to tell. Every redirect / pipe case still gets the relay, so `>`, `>>`, and `|` keep delivering TrustedInstaller output to the caller in every shell.
+
+</details>
+
+<details>
 <summary><strong>16.05.2026 — modular split for both architectures, MRU policy change, redirect/help fixes</strong></summary>
 
 This release covers a multi-day overhaul. Both source trees are now modular, the GUI no longer pre-fills the last command at startup, and the CLI redirect path works in every elevation / shell combination.

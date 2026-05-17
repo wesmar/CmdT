@@ -50,6 +50,9 @@ wcscat_p                PROTO :DWORD,:DWORD
 wcscmp_ci               PROTO :DWORD,:DWORD
 skip_spaces             PROTO :DWORD
 
+; --- In-project helper from help.asm ---
+NudgeConsolePrompt      PROTO
+
 ; ==============================================================================
 ; CONSTANT STRING DATA - private to this module
 ; ==============================================================================
@@ -64,6 +67,24 @@ str_cmdtPrefix  dw 'C','M','D',0
 ;   "-cli -outfile \"<relay-path>\" <rest of original args after -cli>"
 str_relayPrefix dw '-','c','l','i',' ','-','o','u','t','f','i','l','e',' ','"',0
 str_relayMid    dw '"',' ',0
+
+; Interactive shells that cannot tolerate the relay path (CREATE_NO_WINDOW +
+; redirected stdout to a temp file). When the user runs `cmdt -cli <shell>`
+; with no further arguments we decline relay so the plain UAC self-elevate
+; fallback gives them a real, attachable console window instead.
+str_shell_cmd      dw 'c','m','d',0
+str_shell_cmd_exe  dw 'c','m','d','.','e','x','e',0
+str_shell_ps       dw 'p','o','w','e','r','s','h','e','l','l',0
+str_shell_ps_exe   dw 'p','o','w','e','r','s','h','e','l','l','.','e','x','e',0
+str_shell_pwsh     dw 'p','w','s','h',0
+str_shell_pwsh_exe dw 'p','w','s','h','.','e','x','e',0
+
+; Null-terminated pointer table walked by the shell-guard loop in
+; NonAdminRelayLaunch. Add new shell names by inserting another pointer
+; before the terminating zero. 4-byte pointers in x86.
+shell_names_table  dd str_shell_cmd, str_shell_cmd_exe, \
+                      str_shell_ps,  str_shell_ps_exe,  \
+                      str_shell_pwsh, str_shell_pwsh_exe, 0
 
 ; ==============================================================================
 ; CODE SECTION
@@ -85,6 +106,30 @@ NonAdminRelayLaunch proc uses ebx esi edi pArgvIn:DWORD, argcIn:DWORD, rawCmd:DW
     invoke wcscmp_ci, eax, offset str_newSwitch
     test eax, eax
     jnz narl_decline
+
+    ; Interactive-shell guard. The relay path uses CREATE_NO_WINDOW plus a
+    ; temp-file capture of stdout — fundamentally incompatible with a shell
+    ; that expects an attached console (no stdin, no prompt redraw, no
+    ; output to the user). When argv looks like exactly `cmdt -cli <shell>`
+    ; (argc == 3, no extra tokens like `/c` or `-Command`), bail out so the
+    ; caller's plain UAC self-elevate path spawns a real new console.
+    ; Anything with extra arguments (e.g. `cmd /c dir`) keeps the relay so
+    ; its output is still streamed back to the caller.
+    cmp argcIn, 3
+    jne narl_setup
+
+    mov ebx, offset shell_names_table
+narl_shell_loop:
+    mov edx, [ebx]
+    test edx, edx
+    jz narl_setup                       ; List exhausted, not an interactive shell
+    mov esi, pArgvIn
+    mov eax, [esi+8]                    ; argv[2]
+    invoke wcscmp_ci, eax, edx
+    test eax, eax
+    jnz narl_decline                    ; Match: interactive shell → fall back to plain UAC
+    add ebx, 4
+    jmp narl_shell_loop
 
 narl_setup:
     invoke GetModuleFileNameW, 0, offset g_exePath, 260
@@ -185,6 +230,7 @@ narl_close_file:
     invoke CloseHandle, hRead
 
 narl_delete_exit:
+    invoke NudgeConsolePrompt
     invoke DeleteFileW, offset g_relayPath
     invoke ExitProcess, 0
 

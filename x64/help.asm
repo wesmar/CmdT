@@ -15,6 +15,8 @@
 ;   ShowUsage        - Free argv (optional) and write the usage banner. Picks
 ;                      WriteConsoleW for console handles and WriteFile for
 ;                      redirected handles. Never returns.
+;   NudgeConsolePrompt - Best-effort prompt redraw helper for GUI-subsystem
+;                        CLI paths attached to a parent cmd.exe console.
 ; ==============================================================================
 
 option casemap:none
@@ -34,6 +36,8 @@ EXTRN ExitProcess:PROC
 ; --- String helpers from strutil.asm ---
 EXTRN wcscmp_ci:PROC
 EXTRN wcslen_p:PROC
+
+PUBLIC NudgeConsolePrompt
 
 ; ==============================================================================
 ; CONSTANT STRING DATA
@@ -309,5 +313,73 @@ su_exit:
     call ExitProcess
     add rsp, 32
 ShowUsage endp
+
+; ==============================================================================
+; NudgeConsolePrompt - Ask cmd.exe to redraw its prompt after CLI output
+;
+; Purpose: GUI-subsystem programs launched from cmd.exe are not waited on like
+;          console programs. When they later attach to/copy output into the
+;          console, cmd.exe may have already printed its prompt in the wrong
+;          place. Posting a single Enter to the console input queue makes cmd
+;          redraw after our output. No-op for redirected stdout.
+;
+; Parameters: None
+; Returns: None
+; ==============================================================================
+NudgeConsolePrompt proc frame
+    push rdi
+    .pushreg rdi
+    sub rsp, 64
+    .allocstack 64
+    .endprolog
+
+    mov ecx, STD_OUTPUT_HANDLE
+    sub rsp, 32
+    call GetStdHandle
+    add rsp, 32
+    test rax, rax
+    jz ncp_done
+    cmp rax, -1
+    je ncp_done
+
+    mov rcx, rax
+    sub rsp, 32
+    call GetFileType
+    add rsp, 32
+    cmp eax, 2                  ; FILE_TYPE_CHAR
+    jne ncp_done
+
+    mov ecx, STD_INPUT_HANDLE
+    sub rsp, 32
+    call GetStdHandle
+    add rsp, 32
+    test rax, rax
+    jz ncp_done
+    cmp rax, -1
+    je ncp_done
+    mov rdi, rax
+
+    mov word ptr  [rsp+0],  1
+    mov word ptr  [rsp+2],  0
+    mov dword ptr [rsp+4],  1
+    mov word ptr  [rsp+8],  1
+    mov word ptr  [rsp+10], 0Dh
+    mov word ptr  [rsp+12], 1Ch
+    mov word ptr  [rsp+14], 0Dh
+    mov dword ptr [rsp+16], 0
+
+    sub rsp, 32
+    lea r9, [rsp+32+24]
+    mov r8d, 1
+    lea rdx, [rsp+32]
+    mov rcx, rdi
+    call WriteConsoleInputW
+    add rsp, 32
+
+ncp_done:
+    add rsp, 64
+    pop rdi
+    ret
+NudgeConsolePrompt endp
 
 end

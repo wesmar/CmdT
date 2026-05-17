@@ -30,6 +30,7 @@ EXTRN ShellExecuteExW:PROC
 EXTRN GetModuleFileNameW:PROC
 EXTRN AttachConsole:PROC
 EXTRN GetStdHandle:PROC
+EXTRN GetFileType:PROC
 EXTRN WaitForSingleObject:PROC
 EXTRN CloseHandle:PROC
 EXTRN CreateFileW:PROC
@@ -318,12 +319,11 @@ mainCRTStartup proc frame
     cld                         ; Clear direction flag for string operations
 
     ; ===== Attach to parent shell's console (best effort) =====
-    ; If we were launched from cmd with no redirection, our std handles
-    ; are NULL and we need an attached console to deliver output. But if
-    ; cmd already passed inherited handles via STARTF_USESTDHANDLES (the
-    ; redirection or pipe case), AttachConsole would *overwrite* those
-    ; handles with CONIN$/CONOUT$ — silently losing the user's redirect
-    ; target. So we only attach when there's no valid stdout already.
+    ; Redirection and pipes must keep their inherited handles intact. A real
+    ; console handle is different: the GUI-subsystem parent may still not be
+    ; attached to that console, and then a child console process can flash in
+    ; its own window instead of writing inline. Attach for CHAR/invalid stdout,
+    ; but leave FILE/PIPE stdout alone.
     mov ecx, STD_OUTPUT_HANDLE
     sub rsp, 32
     call GetStdHandle
@@ -331,6 +331,12 @@ mainCRTStartup proc frame
     test rax, rax
     jz early_do_attach
     cmp rax, -1
+    je early_do_attach
+    mov rcx, rax
+    sub rsp, 32
+    call GetFileType
+    add rsp, 32
+    cmp eax, 2                  ; FILE_TYPE_CHAR = console/character device
     je early_do_attach
     jmp early_attach_done
 

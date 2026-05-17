@@ -316,6 +316,29 @@ start proc
 
     cld                                     ; Clear direction flag (forward string ops)
 
+    ; ===== Attach to parent shell's console (best effort) =====
+    ; cmdt_x86.exe is built as /subsystem:windows (GUI), so cmd.exe does not
+    ; automatically wire up our STD_OUTPUT_HANDLE to its console — running
+    ; `cmdt -cli net session` from a non-admin shell with no redirect would
+    ; otherwise see GetStdHandle(STD_OUTPUT_HANDLE) return NULL and silently
+    ; drop the relay output. Redirected handles (`>file`, `|pipe`) ARE
+    ; inherited from cmd.exe, so leave those alone — AttachConsole would
+    ; overwrite them with CONOUT$.
+    invoke GetStdHandle, STD_OUTPUT_HANDLE
+    test eax, eax
+    jz early_do_attach
+    cmp eax, -1
+    je early_do_attach
+    invoke GetFileType, eax
+    cmp eax, FILE_TYPE_CHAR
+    je early_do_attach
+    jmp early_attach_done
+
+early_do_attach:
+    invoke AttachConsole, ATTACH_PARENT_PROCESS
+
+early_attach_done:
+
     ; Parse once before UAC so help can print without elevation and non-admin
     ; CLI can decide whether to use the output relay.
     invoke GetCommandLineW

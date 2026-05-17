@@ -198,4 +198,57 @@ sue_exit:
     invoke ExitProcess, 1
 ShowUsageAndExit endp
 
+; ==============================================================================
+; NudgeConsolePrompt - Ask cmd.exe to redraw its prompt after CLI output
+;
+; Purpose: GUI-subsystem programs (like cmdt_x86.exe) launched from cmd.exe
+;          are not waited on as console programs would be. By the time we
+;          finish streaming relay output to STDOUT, cmd.exe has already
+;          printed its next prompt one or more lines too high — leaving the
+;          cursor parked over our last line of output with no visible
+;          prompt. Posting a single VK_RETURN into the console input queue
+;          makes cmd redraw a fresh prompt below our output.
+;
+;          No-op when STDOUT is not a console (redirected file or pipe) —
+;          there is nothing to nudge.
+;
+; Parameters: None
+; Returns: None
+; ==============================================================================
+NudgeConsolePrompt proc uses ebx edi
+    LOCAL ncpRec[20]:BYTE
+    LOCAL ncpWritten:DWORD
+
+    invoke GetStdHandle, STD_OUTPUT_HANDLE
+    test eax, eax
+    jz ncp_done
+    cmp eax, -1
+    je ncp_done
+
+    invoke GetFileType, eax
+    cmp eax, FILE_TYPE_CHAR
+    jne ncp_done
+
+    invoke GetStdHandle, STD_INPUT_HANDLE
+    test eax, eax
+    jz ncp_done
+    cmp eax, -1
+    je ncp_done
+    mov edi, eax
+
+    lea ebx, ncpRec
+    mov word ptr [ebx+0],  1                ; EventType = KEY_EVENT
+    mov word ptr [ebx+2],  0                ; padding
+    mov dword ptr [ebx+4], 1                ; bKeyDown = TRUE
+    mov word ptr [ebx+8],  1                ; wRepeatCount = 1
+    mov word ptr [ebx+10], 0Dh              ; wVirtualKeyCode = VK_RETURN
+    mov word ptr [ebx+12], 1Ch              ; wVirtualScanCode
+    mov word ptr [ebx+14], 0Dh              ; uChar.UnicodeChar = '\r'
+    mov dword ptr [ebx+16], 0               ; dwControlKeyState
+    invoke WriteConsoleInputW, edi, ebx, 1, addr ncpWritten
+
+ncp_done:
+    ret
+NudgeConsolePrompt endp
+
 end

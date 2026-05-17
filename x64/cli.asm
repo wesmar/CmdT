@@ -54,6 +54,7 @@ EXTRN wcscat_p:PROC
 EXTRN wcscmp_ci:PROC
 EXTRN wcscmp_token:PROC
 EXTRN wcslen_p:PROC
+EXTRN NudgeConsolePrompt:PROC
 
 ; ==============================================================================
 ; CODE SECTION
@@ -721,6 +722,8 @@ run_check_result:
     test rax, rax
     jz cli_failed
 
+    call NudgeConsolePrompt
+
     ; Success: exit with code 0
     xor ecx, ecx
     sub rsp, 32
@@ -729,6 +732,8 @@ run_check_result:
 
 cli_failed_setup:
 cli_failed:
+    call NudgeConsolePrompt
+
     ; Close relay handle on failure path too
     mov rcx, qword ptr g_relayHandle
     test rcx, rcx

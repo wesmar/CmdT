@@ -636,6 +636,10 @@ A secondary bug surfaced during this testing: relay mode (`process.asm`, Mode 3)
 
 **Known limitation, not fixed:** when the `-cli` command *is itself* `cmd.exe` with its own embedded I/O redirection (e.g. a `.lnk` shortcut targeting `cmd.exe /c foo > file`, or a literal `cmdt -cli cmd /c foo > file`), `cmd.exe` refuses with `"Input redirection is not supported, exiting the process immediately."` Tried giving it a real-but-hidden console (`CREATE_NEW_CONSOLE` + `STARTF_USESHOWWINDOW`/`SW_HIDE`) instead of `CREATE_NO_WINDOW`; it made no difference, so that change was reverted in favor of the known-good baseline. This is `cmd.exe` itself declining to redirect without what it considers a proper console — pre-existing in the relay path before this release, not a regression. Plain commands, `.lnk` targets without embedded redirection, and `cmd /c <command>` without a trailing redirect all work correctly. Tracked for a future pass.
 
+### File version bumped to 1.0.0.1
+
+Every previous release shipped `FileVersion`/`ProductVersion` hardcoded at `1.0.0.0`, making it impossible to tell builds apart from Explorer's file properties ([raised on the forum](https://forums.mydigitallife.net/threads/cmdt-ultra-lightweight-run-as-trustedinstaller-pure-x64-x86-assembly.90096/)). Going forward, the version resource in `cmdt.rc` is bumped on every functional change instead of staying frozen.
+
 </details>
 
 <details>

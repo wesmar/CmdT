@@ -6,7 +6,7 @@
 
 CMDT launches any process under the **NT SERVICE\\TrustedInstaller** security context — the highest privilege level in Windows, above both Administrator and SYSTEM. It enables all 34 Windows security privileges in the spawned process token, giving unrestricted access to every protected resource on the system.
 
-The entire tool compiles to **under 30 KB** (x64) and **under 25 KB** (x86). No C runtime. No frameworks. No external dependencies beyond the Windows kernel and a handful of system DLLs that ship with every Windows installation since Vista.
+The entire tool compiles to **under 32 KB** (x64) and **under 25 KB** (x86). No C runtime. No frameworks. No external dependencies beyond the Windows kernel and a handful of system DLLs that ship with every Windows installation since Vista.
 
 ---
 
@@ -35,10 +35,10 @@ Both architectures — **x86 (IA-32)** and **x64 (AMD64)** — are built from se
 
 | Binary | Size | Architecture |
 |---|---|---|
-| `cmdt_x64.exe` | **under 30 KB** | x64 / AMD64 |
+| `cmdt_x64.exe` | **under 32 KB** | x64 / AMD64 |
 | `cmdt_x86.exe` | **under 25 KB** | x86 / IA-32 |
 
-For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in well under 30 KB on x64 and 25 KB on x86. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
+For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in well under 32 KB on x64 and 25 KB on x86. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
 
 ---
 
@@ -50,10 +50,10 @@ For comparison, equivalent tools written in C++ or C# typically weigh in at 50�
 - **Sticky Keys IFEO hook** — `cmdt -shift` installs an Image File Execution Options debugger redirect for `sethc.exe`, so pressing Shift 5 times at the login screen opens a TrustedInstaller command prompt instead of Sticky Keys; `cmdt -unshift` reverts to default behavior (see [Sticky Keys IFEO Hook](#sticky-keys-ifeo-hook))
 - **Windows Defender exclusions** — `-shift` and `-unshift` automatically add or remove process exclusions for the CMDT binary and `cmd.exe` via WMI (`MSFT_MpPreference` COM interface, `ROOT\Microsoft\Windows\Defender` namespace), preventing false-positive interference without spawning a PowerShell process
 - **CLI help** — `-h`, `-help`, `--help`, `-?`, `/?`, `/h`, `/help` all print the usage banner; the check runs **before** UAC self-elevation so output always reaches the original shell — both interactive (`cmdt -help`) and redirected (`cmdt -help > out.txt`) work correctly in elevated and non-elevated sessions
-- **CLI output relay** — running `cmdt -cli <command>` from a non-admin shell now correctly delivers stdout/stderr to the caller's redirect target (`>> out.txt`, `| pipe`, etc.); a temp-file relay bridges the UAC handle-inheritance gap transparently (see [I/O Redirection](#io-redirection--why-it-matters-for-scripting))
+- **CLI output relay** — running `cmdt -cli <command>` correctly delivers stdout/stderr to the caller's redirect target (`>> out.txt`, `| pipe`, etc.) whether the caller is already elevated or not; a temp-file relay bridges the gap transparently in both cases (see [I/O Redirection](#io-redirection--why-it-matters-for-scripting))
 - **All 34 security privileges** enabled in the spawned token (see [Privilege Composition](#privilege-composition))
 - **Token caching** — 30-second TTL avoids redundant privilege escalation on repeated runs
-- **MRU history** — last 5 commands persisted in the registry, available in a dropdown
+- **Opt-in MRU history, off by default** — no registry key exists until explicitly enabled via **File → Enable History** in the GUI; last 5 commands available in a dropdown once turned on; `cmdt -history-clear` wipes it from the CLI (see [MRU History](#mru-most-recently-used-history))
 - **Windows shortcut (.lnk) resolution** — via COM (`IShellLinkW` + `IPersistFile`), both path and arguments
 - **Drag-and-drop** with UIPI bypass — accepts drops from non-elevated Explorer windows
 - **DPI-aware** — PerMonitorV2 via application manifest, sharp rendering on mixed-DPI setups
@@ -101,7 +101,8 @@ cmdt_x64.exe
 
 The window provides:
 
-- **ComboBox** with dropdown — type a command or select from the MRU history (last 5 commands, persisted across sessions in `HKCU\Software\cmdt`)
+- **ComboBox** with dropdown — type a command or, once history is enabled, select from the MRU list (last 5 commands)
+- **File menu** — Open with TrustedInstaller (browse), **Enable History** (checkbox — off by default, see [MRU History](#mru-most-recently-used-history)), About, Exit
 - **Browse...** button — opens a file picker filtered to executables (`.exe`, `.lnk`)
 - **Run** button — launches the command as TrustedInstaller
 - **Status bar** — displays "Ready", "Launching...", "Process OK", or "Failed"
@@ -121,6 +122,7 @@ cmdt_x64.exe -install
 cmdt_x64.exe -uninstall
 cmdt_x64.exe -shift
 cmdt_x64.exe -unshift
+cmdt_x64.exe -history-clear
 ```
 
 | Switch | Description |
@@ -131,6 +133,7 @@ cmdt_x64.exe -unshift
 | `-uninstall` | Remove all CMDT context menu entries |
 | `-shift` | Install Sticky Keys IFEO hook + Defender exclusions |
 | `-unshift` | Remove Sticky Keys IFEO hook + Defender exclusions |
+| `-history-clear` | Wipe the MRU command-history registry key, if present |
 | `-h`, `-help`, `--help`, `-?`, `/?`, `/h`, `/help` | Display available options |
 | `(no arguments)` | Launch GUI mode |
 
@@ -159,16 +162,16 @@ cmdt_x64.exe -cli cmd /c whoami > output.txt
 cmdt_x64.exe -cli net session >> out.txt
 ```
 
-**When running from an already-elevated shell**, handle inheritance is direct: CMDT simply passes `STARTF_USESTDHANDLES` with the inherited handles through to the child process via `CreateProcessWithTokenW`.
+**Every `-cli` invocation goes through the same temp-file relay**, whether the caller is already elevated or not. Earlier builds only relayed the non-admin path and let an already-elevated shell call `CreateProcessWithTokenW` directly with `STARTF_USESTDHANDLES` — but `CreateProcessWithTokenW` does not reliably hand the spawned child usable inherited std handles, so an admin `cmd.exe` running `cmdt -cli net session > out.txt` silently produced an empty file ([issue #1](https://github.com/wesmar/CmdT/issues/1)). The relay now runs unconditionally for `-cli`:
 
-**When running from a non-admin shell**, UAC starts the elevated child in a new process tree with no handle inheritance — the OS security boundary intentionally severs the handle relationship. CMDT bridges this gap with a **temp-file relay**:
+1. The parent (admin or not) creates a unique temp file via `GetTempFileNameW`.
+2. It inserts an internal `-outfile <path>` token into the argument string and launches an elevated copy of itself via `ShellExecuteExW("runas")` — a no-op prompt if already elevated, a real UAC prompt otherwise.
+3. The elevated child opens the temp file with an inheritable `GENERIC_WRITE` handle and uses it as the spawned process's `hStdOutput`/`hStdError`; `hStdInput` is a handle to the `NUL` device rather than `NULL`, since some console-aware targets refuse to start with a null stdin handle.
+4. After the elevated process exits, the parent opens the temp file, streams its contents to its own `STD_OUTPUT_HANDLE` (which cmd.exe wired up before launch — so `> file`, `>> file`, and `| pipe` all work transparently), then deletes the temp file and exits.
 
-1. The non-admin parent creates a unique temp file via `GetTempFileNameW`.
-2. It inserts an internal `-outfile <path>` token into the argument string and launches an elevated copy of itself via `ShellExecuteExW("runas")`.
-3. The elevated child opens the temp file with an inheritable `GENERIC_WRITE` handle and uses it as the spawned process's `hStdOutput`/`hStdError`.
-4. After the elevated process exits, the non-admin parent opens the temp file, streams its contents to its own `STD_OUTPUT_HANDLE` (which cmd.exe wired up before launch — so `> file`, `>> file`, and `| pipe` all work transparently), then deletes the temp file and exits.
+The relay declines — falling back to direct dispatch — for `-new` (a detached console has no output to capture), for interactive shells (`cmd`, `powershell`, `pwsh` invoked with no further arguments, which need a real attachable console), for the internal `-outfile` relay child itself (guarding against relaying itself again on re-entry), and if temp-file creation fails.
 
-The relay is skipped when `-new` is passed (a detached console has no output to capture), and falls back gracefully to plain UAC self-elevation if temp-file creation fails.
+One known limitation survives this fix: if the `-cli` command *is itself* `cmd.exe` with embedded I/O redirection (`cmd /c foo > file`, or a `.lnk` shortcut targeting that), `cmd.exe` refuses to run under the relay's `CREATE_NO_WINDOW` context with `"Input redirection is not supported, exiting the process immediately."` Plain commands and `.lnk` targets without their own embedded redirection are unaffected.
 
 This makes CMDT suitable for **unattended automation scripts**, batch files, and CI/CD pipelines where capturing TrustedInstaller-level output is necessary:
 
@@ -180,7 +183,7 @@ cmdt_x64.exe -cli cmd /c dir "C:\Windows\WinSxS\*.manifest" /s > manifests.txt
 cmdt_x64.exe -cli net session >> audit.txt
 ```
 
-Without the relay, these commands would open orphaned console windows and output would be lost. With the relay, even a non-admin shell gets the full output at the redirect target.
+Without the relay, these commands would silently lose their output — orphaned console windows for a non-admin caller, or an empty file for an already-elevated one. With the relay applied unconditionally to `-cli`, both cases land the full output at the redirect target.
 
 #### The `-new` flag — detached console
 
@@ -469,11 +472,17 @@ The manifest specifies `requestedExecutionLevel=asInvoker`. CMDT does not rely o
 
 ## MRU (Most Recently Used) History
 
-The GUI maintains a persistent **MRU list of the last 5 commands** in the Windows registry at `HKEY_CURRENT_USER\Software\cmdt`. Values are stored as named entries `0` through `4`, where `0` is the most recent command.
+History is **opt-in and off by default** ([issue #2](https://github.com/wesmar/CmdT/issues/2)) — some users don't want *any* trace of run commands left on disk, and CMDT now respects that out of the box. There is no separate "enabled" flag stored anywhere: **the existence of `HKEY_CURRENT_USER\Software\cmdt` *is* the on/off state.**
 
-On startup, `LoadMRU` reads these values and populates the ComboBox dropdown. After each successful execution, `SaveMRU` shifts existing entries down (0→1, 1→2, ..., 3→4), deletes the oldest entry, and writes the new command at position 0. Duplicate detection is implicit — the shift operation naturally pushes older duplicates off the end of the list.
+- **File → Enable History** (GUI menu checkbox) reflects whether the key exists at startup.
+- **Checking it** flips the in-memory flag only — the key is created lazily by the next executed command, same mechanism as before.
+- **Unchecking it** flips the flag and calls `RegDeleteTreeW` immediately, wiping the key and every stored value on the spot.
+- **`cmdt -history-clear`** does the same wipe from the CLI, for anyone who never opens the GUI.
+- While disabled, `LoadMRU` is never called and `SaveMRU` exits immediately — zero registry reads or writes, not even a failed `RegOpenKeyExW` probe.
 
-The MRU list persists across sessions, reboots, and updates. It is the only state CMDT writes to disk (via the registry).
+When enabled, values are stored as named entries `0` through `4`, where `0` is the most recent command. On startup, `LoadMRU` reads these values and populates the ComboBox dropdown. After each successful execution, `SaveMRU` shifts existing entries down (0→1, 1→2, ..., 3→4), deletes the oldest entry, and writes the new command at position 0. Duplicate detection is implicit — the shift operation naturally pushes older duplicates off the end of the list.
+
+The MRU list, when enabled, persists across sessions, reboots, and updates. It remains the only state CMDT writes to disk (via the registry), and now only when the user has explicitly asked for it.
 
 ---
 
@@ -530,7 +539,7 @@ cmdt_asm/
 ├── x86/                    # IA-32 assembly sources (parallel structure)
 │   └── …
 ├── bin/                    # Compiled binaries
-│   ├── cmdt_x64.exe        # 64-bit binary (<30 KB)
+│   ├── cmdt_x64.exe        # 64-bit binary (<32 KB)
 │   └── cmdt_x86.exe        # 32-bit binary (<25 KB)
 ├── cmdt.rc                 # Version info resource
 ├── cmdt.manifest           # Application manifest (DPI, visual styles, execution level)
@@ -603,6 +612,33 @@ CMDT requires Administrator privileges to run. It does not bypass UAC — the us
 ## Changelog
 
 <details open>
+<summary><strong>12.07.2026 — history made opt-in, `-cli` output relay fixed for already-elevated shells</strong></summary>
+
+Two independent fixes driven by user-filed issues, both verified end-to-end on x64 and mirrored to x86.
+
+### Fix: command history is now off by default (issue #2)
+
+Previously CMDT always wrote the last 5 commands to `HKCU\Software\cmdt` with no way to disable it. The model changed: **the registry key's existence *is* the on/off state**, nothing else is persisted anywhere.
+
+A new **File → Enable History** checkbox was added to the GUI menu, between "Open with TrustedInstaller" and "About". At `WM_CREATE`, CMDT does a read-only `RegOpenKeyExW` probe against `HKCU\Software\cmdt` to decide the checkbox's initial state, then immediately closes the handle. Checking the box just flips an in-memory flag — the key is still created lazily by the next executed command, same mechanism as before. Unchecking it flips the flag *and* calls `RegDeleteTreeW` immediately, wiping the key and every stored value on the spot. `LoadMRU`/`SaveMRU` both now start with a check against that flag and return immediately if history is off — no registry touch at all in that case, not even a failed open.
+
+A new CLI switch, `cmdt -history-clear`, performs the same `RegDeleteTreeW` wipe for anyone who never opens the GUI (added to the usage banner and About dialog on both architectures).
+
+### Fix: `cmdt -cli <cmd> > out.txt` from an already-elevated shell (issue #1)
+
+Reported symptom: running `cmdt_x64.exe -cli net session > out.txt` from an **admin** `cmd.exe` produced an empty file and two blank prompts; the same command from a non-admin shell (which goes through UAC) worked fine.
+
+Root cause: `RunAsTrustedInstaller` always launches the target through `CreateProcessWithTokenW`, which — unlike plain `CreateProcess` — does not reliably hand the spawned child usable inherited std handles. The already-admin dispatch path called it directly with `STARTF_USESTDHANDLES` and inherited/duplicated handles; the non-admin path already avoided this by routing through the temp-file relay (`relay.asm`). The fix: `admin_dispatch` (x64) / `uac_already_admin` (x86) now tries the same relay unconditionally for `-cli`, before falling through to the direct-dispatch code that only still applies to `-new`, interactive shells (`cmd`/`powershell`/`pwsh` with no further arguments), and file-run mode. A new guard checks `argv[2] == "-outfile"` and declines the relay in that case, so the already-elevated relay child (which re-enters the same dispatch code) doesn't try to relay itself again on re-entry — it falls through to `cli.asm`'s existing `-outfile` handling instead, which sets `g_relayHandle` and lets `RunAsTrustedInstaller` write straight to the temp file.
+
+Verified: `net session`, `net user`, and `whoami` through `-cli`, with `>`, `>>`, and `| findstr`, from both an admin `cmd.exe` (no UAC prompt) and a non-admin shell (real UAC prompt). `whoami` specifically returns `nt authority\system` — confirmation that the relayed child genuinely carries the TrustedInstaller token, not merely plain Administrator.
+
+A secondary bug surfaced during this testing: relay mode (`process.asm`, Mode 3) set `hStdInput = NULL`. Combined with `CREATE_NO_WINDOW`, that's enough to make some console-aware targets refuse to start. Fixed on both architectures by opening an inheritable handle to the `NUL` device instead and closing it after the child exits (or on failure, mirroring the existing duplicate-handle cleanup).
+
+**Known limitation, not fixed:** when the `-cli` command *is itself* `cmd.exe` with its own embedded I/O redirection (e.g. a `.lnk` shortcut targeting `cmd.exe /c foo > file`, or a literal `cmdt -cli cmd /c foo > file`), `cmd.exe` refuses with `"Input redirection is not supported, exiting the process immediately."` Tried giving it a real-but-hidden console (`CREATE_NEW_CONSOLE` + `STARTF_USESHOWWINDOW`/`SW_HIDE`) instead of `CREATE_NO_WINDOW`; it made no difference, so that change was reverted in favor of the known-good baseline. This is `cmd.exe` itself declining to redirect without what it considers a proper console — pre-existing in the relay path before this release, not a regression. Plain commands, `.lnk` targets without embedded redirection, and `cmd /c <command>` without a trailing redirect all work correctly. Tracked for a future pass.
+
+</details>
+
+<details>
 <summary><strong>17.05.2026 — interactive-shell guard, x86 console handling synced with x64</strong></summary>
 
 Two follow-up fixes on top of the 16.05.2026 release after non-admin testing in real shells.
@@ -720,9 +756,9 @@ During early development, the minimal proof-of-concept builds were significantly
 | CLI-only (no GUI, no registry, no manifest) | **4 KB** | Bare token acquisition + `CreateProcessWithTokenW` |
 | Hybrid GUI/CLI (no registry, no manifest) | **6 KB** | Added window creation, MRU, drag-and-drop |
 | Current full build (x86) | **<25 KB** | Hybrid mode, context menu, UAC self-elevation, manifest, COM `.lnk` resolution |
-| Current full build (x64) | **<30 KB** | Same feature set, 64-bit calling convention overhead |
+| Current full build (x64) | **~30.5 KB** | Same feature set, 64-bit calling convention overhead |
 
-The growth from 4–6 KB to the current size (~23 KB on x86, ~29 KB on x64) is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, the Sticky Keys IFEO hook with Defender exclusion management, UAC self-elevation, and the wide-character string constants for registry paths and UI text. The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
+The growth from 4–6 KB to the current size (24 KB on x86, ~30.5 KB on x64) is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, the Sticky Keys IFEO hook with Defender exclusion management, UAC self-elevation, and the wide-character string constants for registry paths and UI text. The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
 
 ---
 

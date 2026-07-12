@@ -23,6 +23,20 @@ EXTRN GetStdHandle:PROC
 EXTRN GetCurrentProcess:PROC
 EXTRN DuplicateHandle:PROC
 EXTRN WaitForSingleObject:PROC
+EXTRN CreateFileW:PROC
+
+; ==============================================================================
+; CONSTANT STRING DATA
+; ==============================================================================
+.const
+
+; Device name used to give the relay-mode child a valid, always-empty stdin.
+; Without this, hStdInput=NULL under CREATE_NO_WINDOW makes cmd.exe (and
+; anything else that checks its own console/stdin state) abort immediately
+; with "Input redirection is not supported, exiting the process immediately."
+; instead of running -- breaking every -cli command or .lnk target that is
+; itself cmd.exe.
+str_NulDevice   dw 'N','U','L',0
 
 ; ==============================================================================
 ; UNINITIALIZED DATA SECTION
@@ -83,6 +97,7 @@ RunAsTrustedInstaller proc frame
     mov dword ptr [rsp+192], 0      ; stdin duplicate flag
     mov dword ptr [rsp+196], 0      ; stdout duplicate flag
     mov dword ptr [rsp+200], 0      ; stderr duplicate flag
+    mov dword ptr [rsp+204], 0      ; relay-mode NUL-stdin-handle-opened flag
 
     ; Check for output-relay mode
     cmp qword ptr g_relayHandle, 0
@@ -178,7 +193,35 @@ rp_stdio_ready:
 
 rp_relay_mode:
     ; --- Mode 3: Redirect child stdout/stderr to relay file ---
-    mov qword ptr [rsp+40+80], 0
+    ; hStdInput needs a real, inheritable handle. NULL here (combined with
+    ; CREATE_NO_WINDOW below) makes cmd.exe abort immediately instead of
+    ; running -- open NUL for read so any target always sees valid stdin.
+    ; SECURITY_ATTRIBUTES (24 bytes) at [rsp+208], bInheritHandle = TRUE.
+    mov dword ptr [rsp+208], 24
+    mov dword ptr [rsp+212], 0
+    mov qword ptr [rsp+216], 0
+    mov dword ptr [rsp+224], 1
+    mov dword ptr [rsp+228], 0
+
+    sub rsp, 64
+    mov dword ptr [rsp+32], OPEN_EXISTING
+    mov dword ptr [rsp+40], FILE_ATTRIBUTE_NORMAL
+    mov qword ptr [rsp+48], 0
+    lea r9, [rsp+64+208]
+    mov r8d, FILE_SHARE_READ
+    mov edx, GENERIC_READ
+    lea rcx, str_NulDevice
+    call CreateFileW
+    add rsp, 64
+    cmp rax, -1
+    je rp_relay_stdin_fail
+    mov qword ptr [rsp+40+80], rax   ; hStdInput = NUL handle
+    mov dword ptr [rsp+204], 1       ; remember to close it after the wait
+    jmp rp_relay_stdin_done
+rp_relay_stdin_fail:
+    mov qword ptr [rsp+40+80], 0     ; fall back to previous (broken) behavior
+rp_relay_stdin_done:
+
     mov rax, qword ptr g_relayHandle
     mov qword ptr [rsp+40+88], rax
     mov qword ptr [rsp+40+96], rax
@@ -308,8 +351,17 @@ rp_close_dup_stdout:
     add rsp, 32
 rp_close_dup_stderr:
     cmp dword ptr [rsp+200], 0
-    je rp_close_pi
+    je rp_close_stdin_nul
     mov rcx, qword ptr [rsp+40+96]
+    sub rsp, 32
+    call CloseHandle
+    add rsp, 32
+
+rp_close_stdin_nul:
+    ; Close the NUL device handle opened for relay-mode hStdInput, if any.
+    cmp dword ptr [rsp+204], 0
+    je rp_close_pi
+    mov rcx, qword ptr [rsp+40+80]
     sub rsp, 32
     call CloseHandle
     add rsp, 32

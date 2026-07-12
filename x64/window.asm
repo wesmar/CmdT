@@ -9,7 +9,7 @@
 ;          - File browsing dialog and drag-and-drop file support
 ;          - Registry MRU (Most Recently Used) command list management
 ;          - Windows .lnk (shortcut) file resolution using COM interfaces
-;          - Menu system (File menu with Browse, About, Exit)
+;          - Menu system (File menu with Browse, Enable History, About, Exit)
 ;          - Dynamic window resizing and control repositioning
 ;          - Integration with RunAsTrustedInstaller for command execution
 ; ==============================================================================
@@ -38,6 +38,7 @@ EXTRN RegSetValueExW:PROC
 EXTRN RegEnumValueW:PROC
 EXTRN RegQueryValueExW:PROC
 EXTRN RegDeleteValueW:PROC
+EXTRN RegDeleteTreeW:PROC
 EXTRN RegCloseKey:PROC
 
 ; Window creation and management functions
@@ -60,6 +61,7 @@ EXTRN CreateMenu:PROC
 EXTRN CreatePopupMenu:PROC
 EXTRN AppendMenuW:PROC
 EXTRN SetMenu:PROC
+EXTRN CheckMenuItem:PROC
 
 ; File dialog and file operations
 EXTRN GetOpenFileNameW:PROC
@@ -117,6 +119,7 @@ str_TitleErr    dw 'E','r','r','o','r',0
 ; Menu item text
 str_MenuFile    dw '&','F','i','l','e',0
 str_MenuBrowse  dw '&','O','p','e','n',' ','w','i','t','h',' ','T','r','u','s','t','e','d','I','n','s','t','a','l','l','e','r',0
+str_MenuHistory dw 'E','n','a','b','l','e',' ','H','i','s','t','o','r','y',0
 str_MenuExit    dw 'E','&','x','i','t',0
 str_MenuAbout   dw '&','A','b','o','u','t',0
 
@@ -132,7 +135,8 @@ str_AboutText   dw 'C','M','D','T',' ',' ','v','1','.','0','.','0','.','0',10,10
                 dw 'c','m','d','t','.','e','x','e',' ','-','i','n','s','t','a','l','l',10
                 dw 'c','m','d','t','.','e','x','e',' ','-','u','n','i','n','s','t','a','l','l',10
                 dw 'c','m','d','t','.','e','x','e',' ','-','s','h','i','f','t',10
-                dw 'c','m','d','t','.','e','x','e',' ','-','u','n','s','h','i','f','t',0
+                dw 'c','m','d','t','.','e','x','e',' ','-','u','n','s','h','i','f','t',10
+                dw 'c','m','d','t','.','e','x','e',' ','-','h','i','s','t','o','r','y','-','c','l','e','a','r',0
 
 ; File dialog filter string (double-null terminated)
 str_Filter      dw 'E','x','e','c','u','t','a','b','l','e','s',0,'*','.','e','x','e',';','*','.','l','n','k',0,'A','l','l',' ','F','i','l','e','s',0,'*','.','*',0,0
@@ -141,7 +145,9 @@ str_Filter      dw 'E','x','e','c','u','t','a','b','l','e','s',0,'*','.','e','x'
 str_DefPath     dw 'C',':','\',0
 str_Shell32     dw 's','h','e','l','l','3','2','.','d','l','l',0
 
-; Registry key for storing MRU list
+; Registry key for storing MRU list (PUBLIC: also used by main.asm's
+; CLI -history-clear switch)
+PUBLIC str_regKey
 str_regKey      dw 'S','o','f','t','w','a','r','e','\','c','m','d','t',0
 ; Registry key for app theme preference
 str_regThemeKey dw 'S','o','f','t','w','a','r','e','\'
@@ -490,6 +496,30 @@ wp_create:
     mov rax, [rax+8]            ; lpCreateParams->hInstance
     mov r15, rax                ; Save hInstance
 
+    ; Determine history-enabled state (registry key existence) before
+    ; building the menu, so the checkbox starts in the right state and no
+    ; registry touch happens if the key was never created.
+    lea rax, [rbp-112]
+    sub rsp, 48
+    mov [rsp+32], rax           ; phkResult -> &[rbp-112]
+    mov r9d, KEY_READ
+    xor r8d, r8d                ; ulOptions
+    lea rdx, str_regKey
+    mov ecx, HKEY_CURRENT_USER
+    call RegOpenKeyExW
+    add rsp, 48
+    test eax, eax
+    jnz wp_hist_disabled
+    mov rcx, [rbp-112]
+    sub rsp, 32
+    call RegCloseKey
+    add rsp, 32
+    mov dword ptr g_historyEnabled, 1
+    jmp wp_hist_state_done
+wp_hist_disabled:
+    mov dword ptr g_historyEnabled, 0
+wp_hist_state_done:
+
     ; Create main menu
     sub rsp, 32
     call CreateMenu
@@ -501,11 +531,35 @@ wp_create:
     call CreatePopupMenu
     add rsp, 32
     mov r13, rax                ; Save popup menu handle
+    mov g_hMenuFile, rax         ; Keep for later CheckMenuItem calls
 
     ; Add "Browse" menu item
     lea r9, str_MenuBrowse
     mov r8d, ID_FILE_BROWSE
     mov edx, MF_STRING
+    mov rcx, r13
+    sub rsp, 32
+    call AppendMenuW
+    add rsp, 32
+
+    ; Add separator
+    xor r9d, r9d
+    xor r8d, r8d
+    mov edx, MF_SEPARATOR
+    mov rcx, r13
+    sub rsp, 32
+    call AppendMenuW
+    add rsp, 32
+
+    ; Add "Enable History" checkbox item (checked state reflects whether
+    ; the MRU registry key already existed at startup)
+    lea r9, str_MenuHistory
+    mov r8d, ID_FILE_HISTORY
+    mov edx, MF_STRING
+    cmp dword ptr g_historyEnabled, 0
+    je @F
+    or edx, MF_CHECKED
+@@:
     mov rcx, r13
     sub rsp, 32
     call AppendMenuW
@@ -586,8 +640,12 @@ wp_create:
     jz wp_create_fail
     mov g_hwndEdit, rax         ; Save ComboBox handle
 
-    ; Load MRU list into ComboBox
+    ; Load MRU list into ComboBox (skip entirely when history is off —
+    ; no registry touch at all in that case)
+    cmp dword ptr g_historyEnabled, 0
+    je wp_skip_loadmru
     call LoadMRU
+wp_skip_loadmru:
 
     ; Get hInstance again
     mov rax, [rbp-96]
@@ -734,6 +792,8 @@ wp_command:
     je wp_cmd_exit
     cmp r15d, ID_FILE_ABOUT
     je wp_cmd_about
+    cmp r15d, ID_FILE_HISTORY
+    je wp_cmd_history
     jmp wp_defproc
 
 wp_check_edit:
@@ -896,6 +956,36 @@ wp_browse_cancel:
     call SendMessageW
     add rsp, 32
 
+    xor eax, eax
+    jmp wp_done
+
+wp_cmd_history:
+    ; Toggle "Enable History" checkbox
+    cmp dword ptr g_historyEnabled, 0
+    jne wph_turn_off
+
+    ; Currently off -> turn ON. No registry write here: the key is created
+    ; lazily by SaveMRU on the next executed command.
+    mov dword ptr g_historyEnabled, 1
+    mov r8d, MF_BYCOMMAND or MF_CHECKED
+    jmp wph_setcheck
+
+wph_turn_off:
+    ; Currently on -> turn OFF and wipe any stored history immediately.
+    mov dword ptr g_historyEnabled, 0
+    lea rdx, str_regKey
+    mov ecx, HKEY_CURRENT_USER
+    sub rsp, 32
+    call RegDeleteTreeW
+    add rsp, 32
+    mov r8d, MF_BYCOMMAND or MF_UNCHECKED
+
+wph_setcheck:
+    mov edx, ID_FILE_HISTORY
+    mov rcx, g_hMenuFile
+    sub rsp, 32
+    call CheckMenuItem
+    add rsp, 32
     xor eax, eax
     jmp wp_done
 
@@ -1424,6 +1514,10 @@ SaveMRU proc frame
     ; [rsp+40] = disp (4 bytes)
     ; [rsp+48] = valName (8 bytes)
     ; [rsp+56] = textLen (4 bytes)
+
+    ; History disabled -> do nothing, touch no registry state
+    cmp dword ptr g_historyEnabled, 0
+    je sm_done
 
     ; Get text from ComboBox
     mov r8d, 520                ; Buffer size

@@ -39,6 +39,11 @@ EXTRN WriteFile:PROC
 EXTRN DeleteFileW:PROC
 EXTRN GetTempPathW:PROC
 EXTRN GetTempFileNameW:PROC
+EXTRN RegDeleteTreeW:PROC
+
+; MRU registry key path string, defined in window.asm (PUBLIC there) so the
+; -history-clear CLI switch shares the single source of truth for the path.
+EXTRN str_regKey:WORD
 
 ; String helpers (defined in strutil.asm)
 EXTRN DecryptWideStr:PROC
@@ -108,6 +113,10 @@ str_uninstallSwitch dw '-','u','n','i','n','s','t','a','l','l',0
 str_shiftSwitch     dw '-','s','h','i','f','t',0
 str_unshiftSwitch   dw '-','u','n','s','h','i','f','t',0
 
+; Wipe the MRU command-history registry key (HKCU\Software\cmdt), for users
+; who never open the GUI but still want the stored history gone
+str_historyClearSwitch dw '-','h','i','s','t','o','r','y','-','c','l','e','a','r',0
+
 
 ; ==============================================================================
 ; PRIVILEGE NAME STRINGS
@@ -172,6 +181,7 @@ g_privTable dq offset privStr_0,offset privStr_1,offset privStr_2,offset privStr
 ; Global variables exported to other modules
 PUBLIC g_cachedToken, g_tokenTime, g_hwndMain, g_hwndEdit, g_hwndBtn, g_hwndStatus, g_hConsoleOut, g_hInstance
 PUBLIC g_useNewConsole
+PUBLIC g_historyEnabled, g_hMenuFile
 PUBLIC privPrefix, privSuffix
 
 ; Cached TrustedInstaller token handle (for performance optimization)
@@ -196,6 +206,18 @@ g_useNewConsole dd 0
 
 ; Application instance handle
 g_hInstance     dq 0
+
+; History feature state: 1 if the "Enable History" menu checkbox is on
+; (MRU reads/writes to HKCU\Software\cmdt are allowed), 0 if off (no
+; registry touch at all). Determined at startup from whether the registry
+; key already exists, then toggled live from the File menu.
+g_historyEnabled dd 0
+                 dd 0            ; Padding for alignment
+
+; File popup submenu handle, kept so WM_COMMAND can update the "Enable
+; History" checkbox mark (CheckMenuItem needs the menu that directly
+; owns the item, not the top-level menu bar).
+g_hMenuFile     dq 0
 
 ; Handle to output-relay file (set in elevated child when -outfile flag is
 ; present on the command line). Zero means no relay.
@@ -502,6 +524,38 @@ uac_zero:
     add rsp, 32
 
 admin_dispatch:
+    ; ===== CLI output relay, even when already elevated =====
+    ; RunAsTrustedInstaller always launches through CreateProcessWithTokenW,
+    ; which — unlike plain CreateProcess — does not reliably hand the child
+    ; process usable inherited std handles (see process.asm's "Mode 1"
+    ; comment). That breaks `cmdt -cli <cmd> > out.txt` even when the caller
+    ; is already an elevated Administrator (issue #1: empty output in an
+    ; admin cmd.exe). Route -cli through the same temp-file relay used for
+    ; the non-admin case regardless of current elevation. NonAdminRelayLaunch
+    ; declines (returns 0) for -new, interactive shells, and the internal
+    ; -outfile relay child itself — those fall through to the unchanged
+    ; dispatch below.
+    test r13, r13
+    jz admin_relay_done
+    mov eax, dword ptr [rbp-64]
+    cmp eax, 2
+    jl admin_relay_done
+
+    mov r14, [r13+8]            ; argv[1]
+    lea rdx, str_cliSwitch1
+    mov rcx, r14
+    call wcscmp_ci
+    test rax, rax
+    jz admin_relay_done         ; argv[1] != "-cli"
+
+    mov ecx, dword ptr [rbp-64] ; argc
+    mov rdx, r13                ; argv
+    mov r8, r12                 ; cmdline
+    sub rsp, 32
+    call NonAdminRelayLaunch
+    add rsp, 32
+
+admin_relay_done:
     ; Free early-parse argv (uac_already_admin will re-parse, matching
     ; original behavior). This keeps later dispatch self-contained.
     test r13, r13
@@ -573,6 +627,13 @@ uac_already_admin:
     test rax, rax
     jnz mode_unshift_found
 
+    ; Check if argv[1] matches "-history-clear"
+    lea rdx, str_historyClearSwitch
+    mov rcx, r14
+    call wcscmp_ci
+    test rax, rax
+    jnz mode_historyclear_found
+
     ; No recognized switch: an unknown switch starting with '-' (or '/')
     ; shows usage; anything else is treated as a file path for "Run as TI".
     cmp word ptr [r14], '-'
@@ -632,6 +693,22 @@ mode_unshift_found:
     call LocalFree
     add rsp, 32
     call UninstallShift
+    xor ecx, ecx
+    sub rsp, 32
+    call ExitProcess
+    add rsp, 32
+
+mode_historyclear_found:
+    ; Free argv and wipe the MRU registry key, if it exists
+    mov rcx, r13
+    sub rsp, 32
+    call LocalFree
+    add rsp, 32
+    lea rdx, str_regKey
+    mov ecx, HKEY_CURRENT_USER
+    sub rsp, 32
+    call RegDeleteTreeW
+    add rsp, 32
     xor ecx, ecx
     sub rsp, 32
     call ExitProcess

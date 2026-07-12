@@ -56,6 +56,8 @@ EXTRN g_tempBuf:WORD            ; Temporary work buffer (1040 wide chars = 2080 
 
 EXTRN g_exePath:WORD            ; Exe path (UAC self-elevate + context menu)
 EXTRN g_useNewConsole:DWORD     ; New console window flag for spawned command
+EXTRN g_historyEnabled:DWORD    ; MRU history on/off (reflects HKCU\Software\cmdt existence)
+EXTRN g_hMenuFile:DWORD         ; File popup submenu handle (for History checkbox mark)
 EXTRN g_tempDirBuf:WORD         ; Temp dir buffer for relay setup
 EXTRN g_relayPath:WORD          ; Temp file path produced by relay parent
 EXTRN g_relayArgs:WORD          ; Modified args string for elevated relay child

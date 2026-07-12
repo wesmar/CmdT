@@ -29,6 +29,7 @@ include globals.inc
 ; --- Cross-module strings owned by main.asm ---
 EXTRN str_runas:WORD
 EXTRN str_newSwitch:WORD
+EXTRN str_outfileFlag:WORD
 
 ; --- Win32 APIs ---
 EXTRN GetModuleFileNameW:PROC
@@ -149,6 +150,19 @@ NonAdminRelayLaunch proc frame
 
     mov rcx, [r13+16]                   ; argv[2]
     lea rdx, str_newSwitch
+    call wcscmp_ci
+    test rax, rax
+    jnz narl_decline
+
+    ; The elevated relay child itself is launched as:
+    ;   cmdt -cli -outfile "<temp>" <command>
+    ; Now that admin_dispatch tries this relay unconditionally (issue #1
+    ; fix), that already-elevated child would otherwise try to relay-launch
+    ; itself again on re-entry. Decline so it falls through to normal
+    ; dispatch, where cli.asm's own -outfile handling sets g_relayHandle
+    ; and RunAsTrustedInstaller writes to the temp file directly.
+    mov rcx, [r13+16]                   ; argv[2]
+    lea rdx, str_outfileFlag
     call wcscmp_ci
     test rax, rax
     jnz narl_decline

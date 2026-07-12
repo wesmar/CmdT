@@ -23,6 +23,10 @@ option casemap:none             ; Case-sensitive symbol names
 
 include consts.inc              ; Windows API constants and structures
 
+; MRU registry key path string, defined in window.asm (PUBLIC there) so the
+; -history-clear CLI switch shares the single source of truth for the path.
+EXTRN str_regKey:WORD
+
 ; ==============================================================================
 ; EXTERNAL FUNCTION PROTOTYPES
 ; ==============================================================================
@@ -65,6 +69,7 @@ GetModuleFileNameW      PROTO :DWORD,:DWORD,:DWORD
 RegCreateKeyExW         PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 RegSetValueExW          PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 RegDeleteKeyW           PROTO :DWORD,:DWORD
+RegDeleteTreeW          PROTO :DWORD,:DWORD
 RegCloseKey             PROTO :DWORD
 AttachConsole           PROTO :DWORD
 GetStdHandle            PROTO :DWORD
@@ -139,6 +144,10 @@ str_uninstallSwitch dw '-','u','n','i','n','s','t','a','l','l',0
 str_shiftSwitch     dw '-','s','h','i','f','t',0
 str_unshiftSwitch   dw '-','u','n','s','h','i','f','t',0
 
+; Wipe the MRU command-history registry key (HKCU\Software\cmdt), for users
+; who never open the GUI but still want the stored history gone
+str_historyClearSwitch dw '-','h','i','s','t','o','r','y','-','c','l','e','a','r',0
+
 ; ==============================================================================
 ; PRIVILEGE STRING DEFINITIONS
 ; Windows privileges without "Se" prefix and "Privilege" suffix
@@ -204,6 +213,7 @@ g_privTable dd offset privStr_0,offset privStr_1,offset privStr_2,offset privStr
 ; Global variables exported for use in other modules
 PUBLIC g_cachedToken, g_tokenTime, g_hwndMain, g_hwndEdit, g_hwndBtn, g_hwndStatus, g_hConsoleOut, g_hInstance
 PUBLIC g_useNewConsole, g_relayHandle
+PUBLIC g_historyEnabled, g_hMenuFile
 PUBLIC g_argv, g_argc, g_argv1, g_sa
 PUBLIC privPrefix, privSuffix
 ; FixRegeditPath moved to cli.asm (PUBLIC declared there)
@@ -218,6 +228,17 @@ g_hConsoleOut   dd 0                        ; Console output handle (CLI mode)
 g_useNewConsole dd 0                        ; Flag: create new console window
 g_hInstance     dd 0                        ; Application instance handle
 g_relayHandle   dd 0                        ; Output relay file handle for elevated child
+
+; History feature state: 1 if "Enable History" is checked (MRU reads/writes
+; to HKCU\Software\cmdt allowed), 0 if off (no registry touch at all).
+; Determined at startup from whether the registry key already exists.
+g_historyEnabled dd 0
+
+; File popup submenu handle, kept so WM_COMMAND can update the "Enable
+; History" checkbox mark (CheckMenuItem needs the menu that directly owns
+; the item, not the top-level menu bar). WndProc's hFileMenu is a LOCAL
+; and does not survive between separate WM_COMMAND invocations.
+g_hMenuFile     dd 0
 
 ; Command-line parse outputs from `start` — promoted from LOCALs to globals
 ; so cli.asm can refer to them after the dispatch labels were extracted.
@@ -453,7 +474,31 @@ uac_already_admin:
     mov esi, g_argv
     mov eax, [esi+4]                        ; argv[1] pointer
     mov g_argv1, eax
-    
+
+    ; ===== CLI output relay, even when already elevated =====
+    ; RunAsTrustedInstaller always launches through CreateProcessWithTokenW,
+    ; which -- unlike plain CreateProcess -- does not reliably hand the
+    ; child usable inherited std handles (see process.asm's "Mode 1"
+    ; comment). That breaks `cmdt -cli <cmd> > out.txt` even when the caller
+    ; is already an elevated Administrator (issue #1: empty output in an
+    ; admin cmd.exe). Route -cli through the same temp-file relay used for
+    ; the non-admin case regardless of current elevation. NonAdminRelayLaunch
+    ; declines (returns 0) for -new, interactive shells, and the internal
+    ; -outfile relay child itself -- those fall through to the unchanged
+    ; dispatch below.
+    invoke wcscmp_ci, g_argv1, offset str_cliSwitch1
+    test eax, eax
+    jnz admin_try_relay
+    invoke wcscmp_ci, g_argv1, offset str_cliSwitch2
+    test eax, eax
+    jnz admin_try_relay
+    invoke wcscmp_ci, g_argv1, offset str_cliSwitch3
+    test eax, eax
+    jz admin_relay_done
+admin_try_relay:
+    invoke NonAdminRelayLaunch, g_argv, g_argc, ebx
+admin_relay_done:
+
     ; Check if argv[1] == "-cli" (standard switch)
     push offset str_cliSwitch1
     push g_argv1
@@ -495,6 +540,11 @@ uac_already_admin:
     test eax, eax
     jnz mode_unshift_found
 
+    ; Check if argv[1] matches "-history-clear"
+    invoke wcscmp_ci, g_argv1, offset str_historyClearSwitch
+    test eax, eax
+    jnz mode_historyclear_found
+
     ; No recognized switch: check if argv[1] starts with '-'
     mov eax, g_argv1
     cmp word ptr [eax], '-'
@@ -522,6 +572,11 @@ mode_shift_found:
 mode_unshift_found:
     invoke LocalFree, g_argv
     call UninstallShift
+    invoke ExitProcess, 0
+
+mode_historyclear_found:
+    invoke LocalFree, g_argv
+    invoke RegDeleteTreeW, HKEY_CURRENT_USER, offset str_regKey
     invoke ExitProcess, 0
 
 show_usage:

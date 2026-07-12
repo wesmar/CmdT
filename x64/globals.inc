@@ -62,6 +62,13 @@
     ; window (CREATE_NEW_CONSOLE) instead of inheriting the parent's?
     EXTRN   g_useNewConsole:DWORD
 
+    ; Boolean flag: is command history (MRU registry read/write) enabled?
+    ; Reflects whether HKCU\Software\cmdt exists; toggled from the File menu.
+    EXTRN   g_historyEnabled:DWORD
+
+    ; File popup submenu handle (needed to update the History checkbox mark).
+    EXTRN   g_hMenuFile:QWORD
+
 ; ==============================================================================
 ; WORKING BUFFERS
 ; ==============================================================================

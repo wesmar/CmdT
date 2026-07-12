@@ -218,6 +218,7 @@ ID_FILE_BROWSE              EQU 201      ; File -> Browse menu command
 ID_FILE_CONSOLE             EQU 202      ; File -> Console menu command
 ID_FILE_EXIT                EQU 203      ; File -> Exit menu command
 ID_FILE_ABOUT               EQU 204      ; File -> About menu command
+ID_FILE_HISTORY             EQU 205      ; File -> Enable History menu item (checkbox)
 
 ; ==============================================================================
 ; STANDARD RESOURCES
@@ -250,6 +251,9 @@ FILE_TYPE_CHAR              EQU 00000002h ; Character device / console
 MF_STRING                   EQU 00000000h ; Menu item contains string
 MF_POPUP                    EQU 00000010h ; Menu item opens popup menu
 MF_SEPARATOR                EQU 00000800h ; Menu separator line
+MF_BYCOMMAND                EQU 00000000h ; Menu item identified by command ID
+MF_UNCHECKED                EQU 00000000h ; Menu item unchecked
+MF_CHECKED                  EQU 00000008h ; Menu item checked
 
 ; ==============================================================================
 ; OPEN FILE DIALOG FLAGS

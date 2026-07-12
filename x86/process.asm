@@ -39,6 +39,19 @@ GetStdHandle                PROTO :DWORD
 GetCurrentProcess           PROTO
 DuplicateHandle             PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 WaitForSingleObject         PROTO :DWORD,:DWORD
+CreateFileW                 PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+
+; ==============================================================================
+; CONSTANT STRING DATA
+; ==============================================================================
+.const
+
+; Device name used to give the relay-mode child a valid, always-empty stdin.
+; Without this, hStdInput=NULL under CREATE_NO_WINDOW makes cmd.exe (and
+; anything else that checks its own console/stdin state) abort immediately
+; with "Input redirection is not supported, exiting the process immediately."
+; instead of running.
+str_NulDevice   dw 'N','U','L',0
 
 ; ==============================================================================
 ; UNINITIALIZED DATA SECTION
@@ -91,6 +104,7 @@ RunAsTrustedInstaller proc uses ebx esi edi cmdLine:DWORD, useNewConsole:DWORD
     LOCAL dupIn:DWORD                       ; TRUE if stdin was duplicated
     LOCAL dupOut:DWORD                      ; TRUE if stdout was duplicated
     LOCAL dupErr:DWORD                      ; TRUE if stderr was duplicated
+    LOCAL nulStdin:DWORD                    ; TRUE if relay-mode opened a NUL stdin handle
 
     ; Acquire TrustedInstaller security token
     invoke GetTIToken
@@ -107,6 +121,7 @@ RunAsTrustedInstaller proc uses ebx esi edi cmdLine:DWORD, useNewConsole:DWORD
     mov dupIn, 0
     mov dupOut, 0
     mov dupErr, 0
+    mov nulStdin, 0
 
     ; Relay mode: elevated child redirects spawned process output to a temp file.
     cmp g_relayHandle, 0
@@ -172,7 +187,18 @@ rp_stdio_ready:
     jmp rp_setup_env
 
 rp_relay_mode:
-    mov dword ptr [startupInfo+56], 0        ; hStdInput = NULL
+    ; hStdInput needs a real, inheritable handle. NULL here (combined with
+    ; CREATE_NO_WINDOW below) makes cmd.exe abort immediately instead of
+    ; running -- open NUL for read so any target always sees valid stdin.
+    invoke CreateFileW, offset str_NulDevice, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0
+    cmp eax, -1
+    je rp_relay_stdin_fail
+    mov dword ptr [startupInfo+56], eax      ; hStdInput = NUL handle
+    mov nulStdin, 1
+    jmp rp_relay_stdin_done
+rp_relay_stdin_fail:
+    mov dword ptr [startupInfo+56], 0        ; fall back to previous (broken) behavior
+rp_relay_stdin_done:
     mov eax, g_relayHandle
     mov dword ptr [startupInfo+60], eax      ; hStdOutput = relay file
     mov dword ptr [startupInfo+64], eax      ; hStdError = relay file
@@ -255,9 +281,15 @@ rp_close_dup_out:
     invoke CloseHandle, dword ptr [startupInfo+60]
 rp_close_dup_err:
     cmp dupErr, 0
-    je rp_close_proc_handles
+    je rp_close_stdin_nul
     invoke CloseHandle, dword ptr [startupInfo+64]
-    
+
+rp_close_stdin_nul:
+    ; Close the NUL device handle opened for relay-mode hStdInput, if any.
+    cmp nulStdin, 0
+    je rp_close_proc_handles
+    invoke CloseHandle, dword ptr [startupInfo+56]
+
 rp_close_proc_handles:
     ; Close process handle (we don't need to wait for it)
     mov eax, [procInfo]                     ; hProcess
@@ -286,8 +318,12 @@ rp_fail_dup_out:
     invoke CloseHandle, dword ptr [startupInfo+60]
 rp_fail_dup_err:
     cmp dupErr, 0
-    je rp_no_token
+    je rp_fail_stdin_nul
     invoke CloseHandle, dword ptr [startupInfo+64]
+rp_fail_stdin_nul:
+    cmp nulStdin, 0
+    je rp_no_token
+    invoke CloseHandle, dword ptr [startupInfo+56]
 rp_no_token:
     xor eax, eax                            ; Return failure
     ret

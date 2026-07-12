@@ -6,19 +6,57 @@ Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "Building CMDT - Run as TrustedInstaller" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 
-$VSBASE  = "C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.50.35717\bin\Hostx64"
+function Get-LatestVCToolsPath {
+    $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswhere)) {
+        throw "Nie znaleziono vswhere.exe pod $vswhere. Zainstaluj/napraw Visual Studio Installer."
+    }
+    $vsInstallPath = & $vswhere -latest -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property installationPath
+    if (-not $vsInstallPath) {
+        throw "vswhere nie znalazl instalacji VS z komponentem VC.Tools.x86.x64"
+    }
+    $verFile = Join-Path $vsInstallPath "VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt"
+    $vcVersion = (Get-Content $verFile -Raw).Trim()
+    return Join-Path $vsInstallPath "VC\Tools\MSVC\$vcVersion\bin\Hostx64"
+}
+
+function Get-LatestWinSDK {
+    $sdkRoot = "C:\Program Files (x86)\Windows Kits\10"
+    $latest = Get-ChildItem "$sdkRoot\Include" -Directory |
+        Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
+        Sort-Object { [version]$_.Name } -Descending |
+        Select-Object -First 1
+    if (-not $latest) {
+        throw "Nie znaleziono zadnej wersji Windows SDK w $sdkRoot\Include"
+    }
+    return $latest.Name
+}
+
+$VSBASE  = Get-LatestVCToolsPath
 $ML32    = "$VSBASE\x86\ml.exe"
 $ML64    = "$VSBASE\x64\ml64.exe"
 $LINK32  = "$VSBASE\x86\link.exe"
 $LINK64  = "$VSBASE\x64\link.exe"
 
-$SDKBASE       = "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0"
-$SDKBIN        = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64"
-$SDKINCLUDE    = "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0"
+$SDKVER        = Get-LatestWinSDK
+Write-Host ">>> Using VC Tools: $VSBASE" -ForegroundColor DarkGray
+Write-Host ">>> Using Windows SDK: $SDKVER" -ForegroundColor DarkGray
+
+$SDKBASE       = "C:\Program Files (x86)\Windows Kits\10\Lib\$SDKVER"
+$SDKBIN        = "C:\Program Files (x86)\Windows Kits\10\bin\$SDKVER\x64"
+$SDKBINX86     = "C:\Program Files (x86)\Windows Kits\10\bin\$SDKVER\x86"
+$SDKINCLUDE    = "C:\Program Files (x86)\Windows Kits\10\Include\$SDKVER"
 $LIBPATH32_UM  = "$SDKBASE\um\x86"
 $LIBPATH32_UCRT = "$SDKBASE\ucrt\x86"
 $LIBPATH64_UM  = "$SDKBASE\um\x64"
 $LIBPATH64_UCRT = "$SDKBASE\ucrt\x64"
+
+# rc.exe czasem siedzi tylko w folderze x86, niezaleznie od architektury builda
+$RC = "$SDKBIN\rc.exe"
+if (-not (Test-Path $RC)) { $RC = "$SDKBINX86\rc.exe" }
+if (-not (Test-Path $RC)) { throw "Nie znaleziono rc.exe ani w $SDKBIN ani w $SDKBINX86" }
 
 $env:PATH += ";$SDKBIN"
 $env:INCLUDE = "$SDKINCLUDE\um;$SDKINCLUDE\shared;$SDKINCLUDE\ucrt"
@@ -35,7 +73,7 @@ $BuildSuccess = $true
 Write-Host ""
 Write-Host ">>> Architecture: x86" -ForegroundColor Cyan
 Push-Location $ScriptDir
-& rc /c65001 /fo cmdt_x86.res cmdt.rc
+& $RC /c65001 /fo cmdt_x86.res cmdt.rc
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Resource compilation failed" -ForegroundColor Red
     $BuildSuccess = $false
@@ -78,7 +116,7 @@ Pop-Location
 Write-Host ""
 Write-Host ">>> Architecture: x64" -ForegroundColor Cyan
 Push-Location $ScriptDir
-& rc /c65001 /fo cmdt_x64.res cmdt.rc
+& $RC /c65001 /fo cmdt_x64.res cmdt.rc
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Resource compilation failed" -ForegroundColor Red
     $BuildSuccess = $false

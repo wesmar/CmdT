@@ -35,6 +35,7 @@ EXTRN str_newSwitch:WORD
 EXTRN str_extLnk_m:WORD
 EXTRN str_space:WORD
 EXTRN str_outfileFlag:WORD
+EXTRN str_errfileFlag:WORD
 
 ; --- Cross-module proc in main.asm reached on GUI fallback ---
 mode_gui                PROTO
@@ -425,6 +426,8 @@ outfile_copy:
     mov ecx, edi
     sub ecx, esi
     shr ecx, 1
+    cmp ecx, 259
+    ja cli_failed_setup
     mov edi, offset g_relayPath
     rep movsw
     mov word ptr [edi], 0
@@ -450,6 +453,64 @@ outfile_advance_spaces:
     cmp eax, -1
     je after_outfile
     mov g_relayHandle, eax
+
+    ; Optional second relay token keeps stderr independent from stdout.
+    ; The fallback in process.asm still accepts older one-file parents.
+    invoke wcscmp_token, esi, offset str_errfileFlag
+    test eax, eax
+    jz after_outfile
+    add esi, 16                             ; Skip "-errfile"
+    invoke skip_spaces, esi
+    mov esi, eax
+    mov edi, esi
+    xor ebx, ebx
+    cmp word ptr [edi], '"'
+    jne errfile_scan_unquoted
+    add edi, 2
+    mov esi, edi
+    mov ebx, 1
+errfile_scan_quoted:
+    mov ax, word ptr [edi]
+    test ax, ax
+    jz errfile_copy
+    cmp ax, '"'
+    je errfile_copy
+    add edi, 2
+    jmp errfile_scan_quoted
+errfile_scan_unquoted:
+    mov ax, word ptr [edi]
+    test ax, ax
+    jz errfile_copy
+    cmp ax, ' '
+    je errfile_copy
+    add edi, 2
+    jmp errfile_scan_unquoted
+errfile_copy:
+    mov ecx, edi
+    sub ecx, esi
+    shr ecx, 1
+    cmp ecx, 259
+    ja cli_failed_setup
+    push esi
+    push edi
+    mov edi, offset g_relayErrPath
+    rep movsw
+    mov word ptr [edi], 0
+    pop edi
+    pop esi
+    mov esi, edi
+    test ebx, ebx
+    jz @F
+    cmp word ptr [esi], '"'
+    jne @F
+    add esi, 2
+@@:
+    invoke skip_spaces, esi
+    mov esi, eax
+    invoke CreateFileW, offset g_relayErrPath, GENERIC_WRITE, FILE_SHARE_READ, offset g_sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0
+    cmp eax, -1
+    je cli_failed_setup
+    mov g_relayErrHandle, eax
 
 after_outfile:
     cmp g_useNewConsole, 0
@@ -652,22 +713,36 @@ run_no_lnk:
     invoke RunAsTrustedInstaller, eax, g_useNewConsole
 
 run_check_result:
+    ; CloseHandle returns its own BOOL in EAX. Save the process-creation
+    ; result so cleanup cannot turn a failed launch into a false success.
+    push eax
     cmp g_relayHandle, 0
-    je @F
+    je cli_success_close_err
     invoke CloseHandle, g_relayHandle
     mov g_relayHandle, 0
+cli_success_close_err:
+    cmp g_relayErrHandle, 0
+    je @F
+    invoke CloseHandle, g_relayErrHandle
+    mov g_relayErrHandle, 0
 @@:
+    pop eax
     test eax, eax
     jz cli_failed
 
-    invoke ExitProcess, 0
+    invoke ExitProcess, g_childExitCode
 
 cli_failed_setup:
 cli_failed:
     cmp g_relayHandle, 0
-    je @F
+    je cli_failure_close_err
     invoke CloseHandle, g_relayHandle
     mov g_relayHandle, 0
+cli_failure_close_err:
+    cmp g_relayErrHandle, 0
+    je @F
+    invoke CloseHandle, g_relayErrHandle
+    mov g_relayErrHandle, 0
 @@:
     invoke ExitProcess, 1
 

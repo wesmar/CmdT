@@ -2,11 +2,11 @@
 
 ![cmdt](images/cmdt.gif)
 
-**The smallest fully functional TrustedInstaller elevation tool for Windows, written entirely in bare-metal x86/x64 assembly.**
+**A compact TrustedInstaller process launcher for Windows, written entirely in native x86/x64 assembly.**
 
-CMDT launches any process under the **NT SERVICE\\TrustedInstaller** security context — the highest privilege level in Windows, above both Administrator and SYSTEM. It enables all 34 Windows security privileges in the spawned process token, giving unrestricted access to every protected resource on the system.
+CMDT starts a process with a primary token duplicated from the running **Windows Modules Installer (TrustedInstaller)** service. That token normally identifies its user as `NT AUTHORITY\SYSTEM` and carries the enabled `NT SERVICE\TrustedInstaller` service SID used by ACLs protecting Windows components. CMDT also attempts to enable its table of 34 Windows token privileges before process creation; Windows still remains the final authority on privileges present in the source token and on every object-specific ACL check.
 
-The entire tool compiles to **under 32 KB** (x64) and **under 25 KB** (x86). No C runtime. No frameworks. No external dependencies beyond the Windows kernel and a handful of system DLLs that ship with every Windows installation since Vista.
+The current release binaries are **36.50 KiB (37,376 bytes)** on x64 and **28.50 KiB (29,184 bytes)** on x86, with enforced build limits of under 40 KiB and under 30 KiB respectively. No C runtime, framework, or third-party runtime is required.
 
 ---
 
@@ -14,7 +14,7 @@ The entire tool compiles to **under 32 KB** (x64) and **under 25 KB** (x86). No 
 
 Windows protects critical system files, registry keys, and services with TrustedInstaller ownership. Even a process running as `NT AUTHORITY\SYSTEM` cannot modify these resources without taking ownership first — a destructive, auditable, and often irreversible operation.
 
-CMDT solves this by spawning processes that **natively run as TrustedInstaller**, with the full set of 34 security privileges already enabled. No ownership changes needed. No ACL modifications. The process simply *is* the owner.
+CMDT solves this by duplicating the TrustedInstaller service process token and using it to create the requested process. The enabled TrustedInstaller service SID satisfies ACL entries that explicitly grant access to that service identity, avoiding the usual ownership and ACL rewrites. This is token-based access, not a new Windows privilege tier above SYSTEM, and it does not bypass an explicit deny ACE or every other security boundary.
 
 ### Typical use cases
 
@@ -29,16 +29,20 @@ CMDT solves this by spawning processes that **natively run as TrustedInstaller**
 
 ## Architecture
 
-CMDT is a **dual-mode binary** — a single executable that operates as both a graphical desktop application and a headless command-line tool, selected at runtime based on arguments. This is not two programs stitched together; the same PE binary, the same entry point, and the same token acquisition pipeline serve both modes. The architecture is sometimes called a **hybrid subsystem** design: the executable uses the Windows subsystem (`/subsystem:windows`) but dynamically attaches to the parent console when invoked with CLI flags.
+CMDT is a **dual-mode binary** — a single executable that operates as both a graphical desktop application and a headless command-line tool, selected at runtime based on arguments. This is not two programs stitched together; the same PE binary, the same entry point, and the same token acquisition pipeline serve both modes.
+
+Both architectures link as `/subsystem:console`, not `/subsystem:windows`. This is a deliberate trade-off: a console-subsystem process is what `cmd.exe` actually waits on synchronously before printing its next prompt — the PE subsystem field is checked by `cmd.exe` at `CreateProcess` time, before any of the child's own code runs, so it cannot be influenced at runtime. A GUI-subsystem binary is never waited on, which is exactly why some older TrustedInstaller launchers exhibit a glued-together prompt or a stray blank line after `-cli` output: the shell already redrew its prompt before the child finished writing. Console subsystem makes `-cli` behave like any other console tool, with correct output ordering and no cosmetic redraw hacks needed.
+
+The cost of that choice is the default (no-argument) GUI launch: the OS attaches a console window to any console-subsystem process before its code runs, which would otherwise cause a visible flash on every double-click launch from Explorer. CMDT avoids it without spawning a second process — at startup, if no arguments were given, it calls `GetConsoleProcessList` to check whether the console belongs **exclusively** to this process (the common case: Explorer, a shortcut, the Run dialog) or is **shared** with an interactive parent shell (the user typed `cmdt` inside an already-open `cmd.exe`). In the exclusive case it calls `GetConsoleWindow` + `ShowWindow(SW_HIDE)` immediately, before falling into the GUI message loop — no `CreateProcessW`, no second process, just two Win32 calls between process start and the window being hidden. In the shared case it leaves the console alone entirely; hiding it would hide the user's whole terminal. Verified via `EnumWindows` + `IsWindowVisible` on the console's own `ConsoleWindowClass` window in both scenarios.
 
 Both architectures — **x86 (IA-32)** and **x64 (AMD64)** — are built from separate, hand-written assembly source trees. No cross-compilation, no `#ifdef` macros, no shared C code. Each target is native assembly tuned to its calling convention and register set.
 
-| Binary | Size | Architecture |
-|---|---|---|
-| `cmdt_x64.exe` | **under 32 KB** | x64 / AMD64 |
-| `cmdt_x86.exe` | **under 25 KB** | x86 / IA-32 |
+| Binary | Current release size | Enforced limit | Architecture |
+|---|---:|---:|---|
+| `cmdt_x64.exe` | **36.50 KiB (37,376 bytes)** | **<40 KiB** | x64 / AMD64 |
+| `cmdt_x86.exe` | **28.50 KiB (29,184 bytes)** | **<30 KiB** | x86 / IA-32 |
 
-For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in well under 32 KB on x64 and 25 KB on x86. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
+For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in well under 40 KB on x64 and 30 KB on x86. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
 
 ---
 
@@ -51,13 +55,13 @@ For comparison, equivalent tools written in C++ or C# typically weigh in at 50�
 - **Windows Defender exclusions** — `-shift` and `-unshift` automatically add or remove process exclusions for the CMDT binary and `cmd.exe` via WMI (`MSFT_MpPreference` COM interface, `ROOT\Microsoft\Windows\Defender` namespace), preventing false-positive interference without spawning a PowerShell process
 - **CLI help** — `-h`, `-help`, `--help`, `-?`, `/?`, `/h`, `/help` all print the usage banner; the check runs **before** UAC self-elevation so output always reaches the original shell — both interactive (`cmdt -help`) and redirected (`cmdt -help > out.txt`) work correctly in elevated and non-elevated sessions
 - **CLI output relay** — running `cmdt -cli <command>` correctly delivers stdout/stderr to the caller's redirect target (`>> out.txt`, `| pipe`, etc.) whether the caller is already elevated or not; a temp-file relay bridges the gap transparently in both cases (see [I/O Redirection](#io-redirection--why-it-matters-for-scripting))
-- **All 34 security privileges** enabled in the spawned token (see [Privilege Composition](#privilege-composition))
+- **34-entry privilege enablement table** — CMDT requests each privilege with `AdjustTokenPrivileges`; Windows enables only privileges already present in the duplicated service token (see [Privilege Composition](#privilege-composition))
 - **Token caching** — 30-second TTL avoids redundant privilege escalation on repeated runs
 - **Opt-in MRU history, off by default** — no registry key exists until explicitly enabled via **File → Enable History** in the GUI; last 5 commands available in a dropdown once turned on; `cmdt -history-clear` wipes it from the CLI (see [MRU History](#mru-most-recently-used-history))
 - **Windows shortcut (.lnk) resolution** — via COM (`IShellLinkW` + `IPersistFile`), both path and arguments
 - **Drag-and-drop** with UIPI bypass — accepts drops from non-elevated Explorer windows
-- **DPI-aware** — PerMonitorV2 via application manifest, sharp rendering on mixed-DPI setups
-- **Dark mode support** — reads `AppsUseLightTheme` from the registry and applies `DWMWA_USE_IMMERSIVE_DARK_MODE` via `DwmSetWindowAttribute`; title bar updates instantly on `WM_SETTINGCHANGE` without restarting
+- **DPI-aware** — PerMonitorV2 via application manifest, sharp rendering on mixed-DPI setups; the DPI query APIs themselves are resolved dynamically at runtime (not statically imported) so the binary still loads and runs on Windows 7/8/8.1, just without per-monitor scaling (see [Manifest and DPI Awareness](#manifest-and-dpi-awareness))
+- **System-aware dark mode** — reads `AppsUseLightTheme` from the registry and applies it to the title bar, Mica backdrop, ComboBox, buttons, status label, and native popup-menu theme. Updates on `WM_SETTINGCHANGE`/`WM_THEMECHANGED` without restarting. The classic top-level `HMENU` strip remains rendered by USER32; CMDT deliberately does not force the experimental owner-draw path that proved re-entrant on x64 (see [Dark Mode and Mica Backdrop](#dark-mode-and-mica-backdrop))
 - **Mica backdrop** — `DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_MAINWINDOW` on Windows 11; the window background is transparent to the Mica layer (no background brush)
 - **Modern visual styles** — Common Controls v6 through SxS manifest dependency
 - **Resilient service startup** — retry loop with up to 2-second backoff when TrustedInstaller service is cold
@@ -164,12 +168,12 @@ cmdt_x64.exe -cli net session >> out.txt
 
 **Every `-cli` invocation goes through the same temp-file relay**, whether the caller is already elevated or not. Earlier builds only relayed the non-admin path and let an already-elevated shell call `CreateProcessWithTokenW` directly with `STARTF_USESTDHANDLES` — but `CreateProcessWithTokenW` does not reliably hand the spawned child usable inherited std handles, so an admin `cmd.exe` running `cmdt -cli net session > out.txt` silently produced an empty file ([issue #1](https://github.com/wesmar/CmdT/issues/1)). The relay now runs unconditionally for `-cli`:
 
-1. The parent (admin or not) creates a unique temp file via `GetTempFileNameW`.
-2. It inserts an internal `-outfile <path>` token into the argument string and launches an elevated copy of itself via `ShellExecuteExW("runas")` — a no-op prompt if already elevated, a real UAC prompt otherwise.
-3. The elevated child opens the temp file with an inheritable `GENERIC_WRITE` handle and uses it as the spawned process's `hStdOutput`/`hStdError`; `hStdInput` is a handle to the `NUL` device rather than `NULL`, since some console-aware targets refuse to start with a null stdin handle.
-4. After the elevated process exits, the parent opens the temp file, streams its contents to its own `STD_OUTPUT_HANDLE` (which cmd.exe wired up before launch — so `> file`, `>> file`, and `| pipe` all work transparently), then deletes the temp file and exits.
+1. The parent (admin or not) creates **two** unique temp files via `GetTempFileNameW` — one for stdout, one for stderr — so redirecting only one stream (`2>err.txt` without touching stdout, or vice versa) behaves correctly instead of interleaving both into a single stream.
+2. It inserts internal `-outfile <path>` and `-errfile <path>` tokens into the argument string and launches an elevated copy of itself via `ShellExecuteExW("runas")` — a no-op prompt if already elevated, a real UAC prompt otherwise.
+3. The elevated child opens both temp files with inheritable `GENERIC_WRITE` handles and uses them as the spawned process's `hStdOutput`/`hStdError` respectively; `hStdInput` is a handle to the `NUL` device rather than `NULL`, since some console-aware targets refuse to start with a null stdin handle. It waits on the child via `WaitForSingleObject` and captures its real exit code with `GetExitCodeProcess`.
+4. After the elevated process exits, the parent opens each temp file, streams stdout to its own `STD_OUTPUT_HANDLE` and stderr to `STD_ERROR_HANDLE` (both wired up by cmd.exe before launch — so `>`, `>>`, `2>`, and `|` all work transparently and independently), deletes both temp files, and **exits with the same exit code the spawned command produced** rather than always returning 0. This matters for scripts that check `%ERRORLEVEL%`/`$LASTEXITCODE` after a `cmdt -cli` call — a failing command inside the relay now fails the caller's script too.
 
-The relay declines — falling back to direct dispatch — for `-new` (a detached console has no output to capture), for interactive shells (`cmd`, `powershell`, `pwsh` invoked with no further arguments, which need a real attachable console), for the internal `-outfile` relay child itself (guarding against relaying itself again on re-entry), and if temp-file creation fails.
+The relay declines — falling back to direct dispatch — for `-new` (a detached console has no output to capture), for interactive shells (`cmd`, `powershell`, `pwsh` invoked with no further arguments, which need a real attachable console), for the internal `-outfile`/`-errfile` relay child itself (guarding against relaying itself again on re-entry), and if temp-file creation fails.
 
 One known limitation survives this fix: if the `-cli` command *is itself* `cmd.exe` with embedded I/O redirection (`cmd /c foo > file`, or a `.lnk` shortcut targeting that), `cmd.exe` refuses to run under the relay's `CREATE_NO_WINDOW` context with `"Input redirection is not supported, exiting the process immediately."` Plain commands and `.lnk` targets without their own embedded redirection are unaffected.
 
@@ -287,7 +291,7 @@ Windows supports **Image File Execution Options (IFEO)** — a documented regist
 
 When the user presses **Shift five times** at the Windows login screen, the OS launches `sethc.exe` — but the IFEO redirect intercepts this and runs CMDT instead. CMDT then performs its full token acquisition pipeline (SYSTEM impersonation → TrustedInstaller service start → token duplication → privilege enablement) and opens an interactive `cmd.exe` window running as `NT SERVICE\TrustedInstaller`.
 
-This provides a **pre-login recovery console** with the highest privilege level available in Windows — useful for:
+This provides a **pre-login recovery console** carrying the TrustedInstaller service token — useful for:
 
 - Emergency system repair when the machine cannot be logged into
 - Resetting locked-out local accounts via `net user`
@@ -352,23 +356,23 @@ Once `SERVICE_RUNNING` is confirmed, the service's **Process ID** is extracted f
 
 CMDT opens the TrustedInstaller process with `PROCESS_QUERY_INFORMATION`, extracts its token, and duplicates it via `DuplicateTokenEx` with `MAXIMUM_ALLOWED` access. This duplicated token becomes the foundation for the child process.
 
-### Stage 5: Full Privilege Enablement
+### Stage 5: Privilege Enablement
 
-The duplicated token has all 34 Windows security privileges enabled via a loop that calls `LookupPrivilegeValueW` + `AdjustTokenPrivileges` for each privilege in the table (see [Privilege Composition](#privilege-composition) below).
+CMDT iterates a table of 34 privilege names and calls `LookupPrivilegeValueW` plus `AdjustTokenPrivileges` for each one. `AdjustTokenPrivileges` can enable a privilege already present in a token; it cannot add one the source token does not contain. The final set therefore depends on the TrustedInstaller service token supplied by that Windows version and configuration.
 
 ### Stage 6: Process Creation
 
-The fully privileged token is passed to `CreateProcessWithTokenW`. CMDT generates a proper environment block via `CreateEnvironmentBlock` (keyed to the TrustedInstaller token) and sets the working directory to `GetSystemDirectoryW`. The spawned process runs natively as TrustedInstaller with all 34 privileges enabled.
+The adjusted token is passed to `CreateProcessWithTokenW`. CMDT generates an environment block via `CreateEnvironmentBlock` and sets the working directory to `GetSystemDirectoryW`. The resulting process normally reports its user as `NT AUTHORITY\SYSTEM`; its token also carries the TrustedInstaller service SID used by protected-resource ACLs.
 
 ### Token Caching
 
-The duplicated, fully privileged token is cached in memory with a 30-second TTL (tracked via `GetTickCount`). Subsequent invocations within the TTL window skip stages 2–5 entirely and reuse the cached token. This dramatically reduces overhead when running multiple commands in sequence — the expensive service startup, process enumeration, and privilege loop execute only once.
+The duplicated token is cached in memory with a 30-second TTL (tracked via `GetTickCount`). Repeated launches within the same long-lived CMDT process — principally GUI commands — can skip stages 2–5 and reuse it. Separate CLI invocations are separate processes and do not share this in-memory cache.
 
 ---
 
 ## Privilege Composition
 
-CMDT enables all **34** Windows security privileges in the spawned token. This is the complete set that exists in the TrustedInstaller token:
+CMDT contains the following **34-entry request table**. It attempts to enable each entry, but the resulting token can contain and enable only privileges present in the source TrustedInstaller service token:
 
 | # | Privilege | Description |
 |---|---|---|
@@ -421,7 +425,7 @@ At runtime, the `BuildPrivilegeName` procedure concatenates these three parts in
 
 This decomposition has two engineering consequences:
 
-1. **Size reduction** — The prefix (`Se`, 4 bytes UTF-16) and suffix (`Privilege`, 18 bytes UTF-16) are stored once instead of 34 times, saving approximately 750 bytes. In a sub-25 KB binary, that is nearly 3% of the total size.
+1. **Size reduction** — The prefix (`Se`, 4 bytes UTF-16) and suffix (`Privilege`, 18 bytes UTF-16) are stored once instead of 34 times, saving approximately 750 bytes. In a sub-30 KB binary, that is roughly 2.5% of the total size.
 
 2. **Static analysis opacity** — Automated scanners and signature-based tools that grep for known privilege strings like `SeDebugPrivilege` or `SeTcbPrivilege` will find **no matches** in the binary. The strings `Se` and `Privilege` appear separately, and the middle parts (`Debug`, `Tcb`, `Backup`, etc.) are generic English words that carry no security significance on their own. This is not obfuscation — it is a natural consequence of factoring out common substrings in a size-constrained binary. But the side effect is significant: the binary's static footprint does not betray the scope of privileges it enables.
 
@@ -441,6 +445,8 @@ The manifest declares both the legacy `dpiAware=true` attribute (for Vista–8.1
 
 This is the same DPI awareness model used by modern Windows applications like Explorer, Edge, and Terminal.
 
+Declaring `PerMonitorV2` in the manifest only stops Windows from doing automatic bitmap stretching — it does not scale anything by itself. `window_lifecycle.inc` queries `GetDpiForSystem()`/`GetDpiForWindow(hWnd)` at window creation, `WM_CREATE`, and `WM_SIZE`, scaling every design-time (96 DPI) coordinate by `value * dpi / 96` before use; the main window's total size is computed from the desired client area via `AdjustWindowRectExForDpi` rather than a guessed pixel constant, so caption/menu/border overhead is correct regardless of Windows theme or font scale. Both functions were introduced in Windows 10 1607 and are **resolved dynamically** — `InitDpiApis` calls `GetModuleHandleA("user32.dll")` + `GetProcAddress` at runtime instead of a static `EXTRN` import. A static import table entry the loader can't resolve fails the whole process to start with "the procedure entry point ... could not be located" — a real crash report from a Windows 7 user running an earlier build that imported these statically. Every call site checks the resulting function pointer for NULL and falls back to a fixed 96-DPI (100%) calculation when it's missing, so the binary still runs correctly on Windows 7/8/8.1 — just without per-monitor scaling, since the concept doesn't exist there.
+
 ### Common Controls v6 (Visual Styles)
 
 The manifest declares a Side-by-Side (SxS) dependency on `Microsoft.Windows.Common-Controls` version 6.0. This activates the modern visual theme for all standard controls — the ComboBox dropdown, buttons, and static labels render with the current Windows theme (Fluent, Aero, or Classic) rather than the legacy Win95 appearance.
@@ -454,17 +460,15 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize
   AppsUseLightTheme (DWORD) — 0 = dark, 1 = light
 ```
 
-Depending on the value, it calls `DwmSetWindowAttribute` with two attributes:
+This drives three cooperating layers. Window and control attributes are reapplied on `WM_SETTINGCHANGE`/`WM_THEMECHANGED`, so a live theme toggle in Windows Settings does not require restarting CMDT:
 
-| Attribute | Value | Effect |
-|---|---|---|
-| `DWMWA_USE_IMMERSIVE_DARK_MODE` (20) | 0 or 1 | Dark or light title bar and window frame |
-| `DWMWA_USE_IMMERSIVE_DARK_MODE_OLD` (19) | same | Fallback for Windows 10 builds before 20H1 |
-| `DWMWA_SYSTEMBACKDROP_TYPE` (38) | `DWMSBT_MAINWINDOW` (2) | Mica material backdrop |
+**1. DWM chrome.** `DwmSetWindowAttribute` is called with `DWMWA_USE_IMMERSIVE_DARK_MODE` (20, falling back to attribute 19 on Windows 10 builds before 20H1) for the title bar, and `DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_MAINWINDOW` (2) for the Mica material backdrop on Windows 11. The window class registers with no background brush (`hbrBackground = NULL`), leaving the client area transparent to the Mica layer.
 
-The Mica backdrop (`DWMSBT_MAINWINDOW`) applies on Windows 11 regardless of light/dark mode — the material automatically adapts its tint to the system accent color and theme. The window class is registered with no background brush (`hbrBackground = NULL`), leaving the client area transparent to the Mica layer.
+**2. Client controls.** The ComboBox, Browse/Run buttons, and status label are switched to comctl32's dark visual style via `SetWindowTheme(hwnd, "DarkModeExplorer", NULL)`, and `WM_CTLCOLOREDIT`/`WM_CTLCOLORBTN`/`WM_CTLCOLORSTATIC`/`WM_CTLCOLORLISTBOX` handlers in `window_dispatch.inc` paint the exact background/text colors (four cached `CreateSolidBrush` handles — background, surface, hover, input — built once in `EnsureThemeBrushes` and reused for the process lifetime) so the result matches Notepad's palette instead of a jarring light-control-on-dark-window mismatch.
 
-CMDT also listens for `WM_SETTINGCHANGE` and `WM_THEMECHANGED` and re-applies both attributes on every theme change. Switching between light and dark mode in Windows Settings updates the CMDT title bar immediately without restarting the application.
+**3. Native menu preference.** Two undocumented, ordinal-only `uxtheme.dll` exports let USER32 use the system's immersive popup-menu palette: ordinal 135 (`AllowDarkModeForApp` before 1903 / `SetPreferredAppMode` on 1903+, called once with value `1`) and ordinal 136 (`FlushMenuThemes`). Value `1` is important: it means TRUE/AllowDark across the two ABIs, whereas value `2` means ForceDark on newer Windows and incorrectly makes the dropdown dark in light mode. Both exports are resolved dynamically and gated behind `RtlGetVersion` build ≥ 17763, so older Windows versions never call them. `AllowDarkModeForWindow` receives the current `AppsUseLightTheme` state for the CMDT window.
+
+The classic top-level menu strip is a USER32 non-client surface and is not reliably recolored by those APIs. The source retains an isolated `ApplyDarkMenuBar` owner-draw experiment and matching handlers for reference, but no production path calls it: activating it caused re-entrant menu messages and an unresponsive x64 window on a current Windows build. Consequently, controls and the native popup follow the system theme, while the top strip may retain the classic system rendering. This is an explicit stability trade-off, not a manifest setting; the manifest controls visual styles, DPI awareness, and execution level, but cannot force a dark classic `HMENU`.
 
 The manifest specifies `requestedExecutionLevel=asInvoker`. CMDT does not rely on the manifest for elevation — instead, it programmatically checks `IsUserAnAdmin()` at startup and re-launches itself via `ShellExecuteExW("runas")` if not elevated. This approach allows the same binary to be invoked silently from already-elevated contexts (scripts, scheduled tasks, elevated terminals) without triggering a redundant UAC prompt, while still self-elevating when launched from a standard user session.
 
@@ -510,46 +514,54 @@ CMDT explicitly bypasses this restriction by calling `ChangeWindowMessageFilterE
 .\build.ps1
 ```
 
-The build script assembles all source modules for both architectures, compiles the resource file (`cmdt.rc`) with the manifest, and links against system import libraries only:
+The build script auto-detects the newest installed Visual Studio C++ toolchain and Windows SDK (`Get-LatestVCToolsPath`/`Get-LatestWinSDK` — see the 2026 changelog entry below for why this isn't a hardcoded path), assembles all source modules for both architectures as `/subsystem:console`, compiles the resource file (`cmdt.rc`) with the manifest, and links against system import libraries only:
 
-`kernel32.lib`, `user32.lib`, `advapi32.lib`, `shell32.lib`, `comdlg32.lib`, `ole32.lib`, `gdi32.lib`, `shlwapi.lib`, `userenv.lib`
+`kernel32.lib`, `user32.lib`, `advapi32.lib`, `shell32.lib`, `comdlg32.lib`, `ole32.lib`, `gdi32.lib`, `shlwapi.lib`, `userenv.lib`, `dwmapi.lib`, `uxtheme.lib`, `OleAut32.lib`
 
 No CRT library is linked. The entry point is `mainCRTStartup` (x64) / `start` (x86) — these are raw assembly procedures, not CRT initialization stubs.
 
-Output binaries are placed in the `bin\` directory.
+Output binaries are placed in the `bin\` directory (gitignored — rebuilt fresh by every `.\build.ps1` run; the tracked release copies live under `data\` for packaging, kept in sync manually).
 
 ---
 
 ## Project Structure
 
 ```
-cmdt_asm/
-├── x64/                    # AMD64 assembly sources
-│   ├── main.asm            # Entry point, CLI/GUI dispatch, privilege table
-│   ├── cli.asm             # CLI mode and file-run dispatch, -outfile relay protocol
-│   ├── help.asm            # Usage banner and help-switch recognition
-│   ├── relay.asm           # Non-admin output relay (temp-file bridge over UAC)
-│   ├── token.asm           # Token acquisition, SYSTEM impersonation, service control
-│   ├── process.asm         # CreateProcessWithTokenW wrapper
-│   ├── install.asm         # Context menu registration and Sticky Keys IFEO hook
-│   ├── window.asm          # GUI, MRU, drag-and-drop, .lnk resolution via COM
-│   ├── strutil.asm         # Wide-character string helpers (wcscpy_p, wcscat_p, …)
-│   ├── consts.inc          # Windows API constants, control IDs, message codes
-│   └── globals.inc         # External symbol declarations shared across modules
-├── x86/                    # IA-32 assembly sources (parallel structure)
+cmdt/
+├── x64/                          # AMD64 assembly sources
+│   ├── main.asm                  # Entry point, CLI/GUI dispatch, privilege table, console-hide-on-GUI-launch
+│   ├── cli.asm                   # CLI mode and file-run dispatch, -outfile/-errfile relay protocol
+│   ├── help.asm                  # Usage banner and help-switch recognition
+│   ├── relay.asm                 # Non-admin AND admin output relay (temp-file bridge, exit-code passthrough)
+│   ├── token.asm                 # Token acquisition, SYSTEM impersonation, service control
+│   ├── process.asm               # CreateProcessWithTokenW wrapper
+│   ├── install.asm               # Context menu registration and Sticky Keys IFEO hook
+│   ├── window.asm                # GUI entry: WNDCLASSW registration, `include`s the six window_*.inc below
+│   ├── window_lifecycle.inc      # InitDpiApis, window/control creation, DPI scaling math
+│   ├── window_theme.inc          # Dark mode: DWM chrome, controls, native UxTheme menu preference
+│   ├── window_commands.inc       # RunCommand — reads the ComboBox, dispatches to RunAsTrustedInstaller
+│   ├── window_dispatch.inc       # WndProc message dispatch table + WM_CREATE/WM_COMMAND handlers
+│   ├── window_events.inc         # WndProc continued: WM_SIZE, input, WM_MEASUREITEM/WM_DRAWITEM, teardown
+│   ├── window_mru.inc            # LoadMRU/SaveMRU — registry-backed Most Recently Used list
+│   ├── strutil.asm               # Wide-character string helpers (wcscpy_p, wcscat_p, …)
+│   ├── consts.inc                # Windows API constants, control IDs, message codes
+│   └── globals.inc               # External symbol declarations shared across modules
+├── x86/                          # IA-32 assembly sources (parallel structure)
 │   └── …
-├── bin/                    # Compiled binaries
-│   ├── cmdt_x64.exe        # 64-bit binary (<32 KB)
-│   └── cmdt_x86.exe        # 32-bit binary (<25 KB)
-├── cmdt.rc                 # Version info resource
-├── cmdt.manifest           # Application manifest (DPI, visual styles, execution level)
-├── build.ps1               # Build script (assembles + links both architectures)
-└── README.md               # This file (documentation)
+├── bin/                          # Compiled binaries (gitignored, rebuilt by build.ps1)
+├── data/                         # Tracked release copies used for packaging (pack-data.sh)
+│   ├── cmdt_x64.exe
+│   ├── cmdt_x86.exe
+│   └── test.bat
+├── cmdt.rc                       # Version info resource
+├── cmdt.manifest                 # Application manifest (DPI, visual styles, execution level)
+├── build.ps1                     # Build script (auto-detects VS/SDK, assembles + links both architectures)
+└── README.md                     # This file (documentation)
 ```
 
 Every source file in `x64/` has a corresponding counterpart in `x86/`. The x86 versions use `.586` + `flat/stdcall` MASM syntax with `invoke` macros; the x64 versions use raw `proc frame` with explicit SEH prologue/epilogue annotations (`.pushreg`, `.allocstack`, `.setframe`, `.endprolog`). Both targets share the same `.rc` and `.manifest` files.
 
-Both source trees were previously monolithic — a single ~90 KB `main.asm` on each side that held the entry point, dispatcher, all helpers, the GUI, the context-menu installer, and the Sticky-Keys hook. They have since been split into focused modules of roughly 200–700 lines each, while keeping the compiled binary size unchanged. The split is identical on both architectures, so any reader who learns one tree can navigate the other without re-orientation.
+Both source trees were originally monolithic — a single ~90 KB `main.asm` on each side. A first pass split the dispatcher, help, relay, install, and string helpers into their own files. `window.asm` itself remained a second, GUI-specific tapeworm (the entire `WndProc`, DPI handling, dark-mode theming, MRU list, and command dispatch all in one file) until a second pass broke it into the six `window_*.inc` files listed above, `include`d back into `window.asm` at assembly time. They deliberately remain one MASM translation unit, preserving internal labels, stack-frame relationships, and call boundaries without adding runtime indirection. The linked binaries remain within the same size limits; the refactor does not claim byte-for-byte object identity because include ordering may change procedure layout. The split is identical on both architectures, so any reader who learns one tree can navigate the other without re-orientation.
 
 ---
 
@@ -583,27 +595,26 @@ Verify the security context:
 
 ```
 C:\Windows\System32> whoami
-nt service\trustedinstaller
+nt authority\system
 
+C:\Windows\System32> whoami /groups | findstr /i trustedinstaller
 C:\Windows\System32> whoami /priv
 ```
 
-All 34 privileges should appear with state **Enabled**.
+The groups output should contain the TrustedInstaller service SID. `whoami /priv` shows the privileges actually present and enabled on that machine; it is not expected to invent every entry from CMDT's request table.
 
 ---
 
 ## Security Considerations
 
-**TrustedInstaller is the highest privilege level in Windows** — higher than Administrator, higher than SYSTEM. A process running as TrustedInstaller can:
+**TrustedInstaller is a highly privileged Windows service identity, not a formal privilege level above SYSTEM.** Its service SID is granted access to many Windows resources that ordinary administrators and a plain SYSTEM token may not satisfy directly. Combined with the service token's privileges, this can permit operations such as:
 
-- Modify or delete any file on the system, including protected OS components
-- Write to any registry key, including those owned by TrustedInstaller
-- Load and unload kernel drivers
-- Access and modify the firmware environment (UEFI variables)
-- Debug any process, including critical system processes
-- Create token objects and impersonate any security principal
+- Modifying protected OS components whose ACL grants access to TrustedInstaller
+- Writing TrustedInstaller-protected registry locations
+- Exercising sensitive token privileges that are present and enabled
+- Starting processes in a security context unsuitable for routine work
 
-Use CMDT with the same caution you would apply to a kernel debugger. Mistakes at this privilege level can render the operating system unbootable.
+Use CMDT with extreme caution. Modifying protected Windows components or registry state can render the operating system unbootable even though the process remains subject to ACLs, integrity policy, protected-process rules, and kernel security boundaries.
 
 CMDT requires Administrator privileges to run. It does not bypass UAC — the user must explicitly elevate the process before CMDT can acquire the TrustedInstaller token.
 
@@ -612,6 +623,63 @@ CMDT requires Administrator privileges to run. It does not bypass UAC — the us
 ## Changelog
 
 <details open>
+<summary><strong>17.07.2026 — converted to console subsystem, system-aware dark mode, window.asm split into focused modules</strong></summary>
+
+### Architecture change: `/subsystem:windows` → `/subsystem:console`
+
+Both `cmdt_x64.exe` and `cmdt_x86.exe` now link as `/subsystem:console` instead of `/subsystem:windows`. The PE subsystem field is read by the parent shell's `CreateProcess` call before any of the child's own code runs, so it can never be influenced at runtime — a GUI-subsystem process is simply never waited on by `cmd.exe`. That is the root cause of the glued-output/blank-double-prompt symptom some users saw after `-cli` commands: `cmd.exe` had already redrawn its prompt before the child finished writing, because it never blocked on the child at all. Every prior workaround (`NudgeConsolePrompt` posting a synthetic `VK_RETURN` into the console input queue to force a prompt redraw) only patched the symptom. Console subsystem fixes the actual cause: `cmd.exe` now waits synchronously and prints its next prompt only after CMDT has genuinely finished, with output in the correct order every time. `NudgeConsolePrompt` and the double-UAC-prompt-avoidance dance it was compensating for are gone from the relay paths entirely.
+
+The trade-off: a console-subsystem process gets a console window attached by the OS before its own code runs, which would otherwise cause a visible flash on every argument-less GUI launch (Explorer double-click, shortcut, Run dialog). Fixed without spawning a second process — see the next entry.
+
+### New: in-process console hiding for GUI launches (replaces the old detach-and-relaunch trick)
+
+At startup, if no arguments were given, CMDT calls `GetConsoleProcessList` to determine whether the console it was just attached to belongs **exclusively** to this process or is **shared** with an interactive parent (the user typed `cmdt` inside an already-open `cmd.exe`). In the exclusive case — the common Explorer/shortcut/Run-dialog launch — it calls `GetConsoleWindow` + `ShowWindow(SW_HIDE)` immediately and falls straight into the GUI message loop in the *same process*. In the shared case it does nothing further; hiding a console window that's actually the user's whole terminal would be a bug, not a feature, and opening the GUI on top of an already-visible shell is the correct, expected behavior there. This replaces an earlier approach (`LaunchDetachedGui`, since removed as dead code) that spawned a whole `DETACHED_PROCESS` copy of the executable and exited the parent — functionally similar but with the overhead of a second `CreateProcessW`/image-load round-trip; the in-process hide is two Win32 calls and measurably faster to hide the window. Verified via `EnumWindows` + `IsWindowVisible` against the console's own `ConsoleWindowClass` window in both the exclusive and shared scenarios, and via `whoami`/exit-code checks that `-cli` behavior is unaffected by the subsystem change.
+
+### Fix: `-cli` stdout/stderr now relay through **separate** temp files, and the real exit code propagates
+
+Previously the relay captured stdout and stderr into a single shared temp file, so `2>err.txt` without also redirecting stdout (or the reverse) interleaved both streams into whichever target was specified. The relay now creates two temp files (`-outfile`/`-errfile`) and streams each back to the caller's own `STD_OUTPUT_HANDLE`/`STD_ERROR_HANDLE` independently. Separately, the relay previously always exited `0` regardless of what the spawned command actually returned — `GetExitCodeProcess` is now captured after `WaitForSingleObject` and the relay process exits with that same code, so `%ERRORLEVEL%`/`$LASTEXITCODE` checks in a caller's script correctly see a `-cli` command's real failure instead of always seeing success.
+
+### Dark mode now covers the client controls and follows the system preference
+
+Previously "dark mode" meant only `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)` on the title bar and a Mica backdrop. `SetWindowTheme` plus `WM_CTLCOLOR*` handlers now cover the ComboBox, buttons, status label, and client background. Runtime-resolved UxTheme ordinals 135/136 (gated behind an `RtlGetVersion` check for Windows 10 1809+) allow the native popup menu to follow the system preference; ordinal 135 uses value `1` (AllowDark), never `2` (ForceDark), so light mode stays light. An owner-drawn top menu experiment was retained in isolated source but disabled after it caused re-entrant USER32 messages and an x64 hang. The classic top strip can therefore remain system-rendered.
+
+### Refactor: `window.asm` split into six focused `.inc` files
+
+`window.asm` was the last remaining tapeworm file — the entry point/dispatcher/relay/install code had already been split out in earlier releases, but the entire GUI (`WndProc`, DPI handling, theming, MRU, command dispatch) stayed in one file. It's now `window.asm` `include`-ing `window_lifecycle.inc`, `window_theme.inc`, `window_commands.inc`, `window_dispatch.inc`, `window_events.inc`, and `window_mru.inc` — see [Project Structure](#project-structure) for what each one owns. MASM still assembles them as one translation unit, so there are no new runtime call boundaries or global-state handoffs. Behavior and size limits are unchanged; byte-for-byte object identity is not asserted because include ordering can alter layout.
+
+### `build.ps1`: auto-detects the newest Visual Studio + Windows SDK instead of hardcoded paths
+
+Extended the existing `Get-LatestVCToolsPath` (see the 13.07.2026 entry below) with a matching `Get-LatestWinSDK` that picks the highest-versioned directory under `Windows Kits\10\Include` instead of a hardcoded SDK version string — the previous hardcoded version stopped existing on disk after a Windows SDK update, breaking the build with no indication why. `uxtheme.lib` added to the link libraries for the dark-mode `SetWindowTheme` call (a documented, statically-linkable export, unlike the undocumented ordinal-only functions above).
+
+</details>
+
+<details>
+<summary><strong>13.07.2026 — PerMonitorV2 DPI scaling actually implemented, build script fixed for newer VS releases</strong></summary>
+
+### Fix: GUI didn't scale on PerMonitorV2-aware displays
+
+The manifest has declared `dpiAwareness=PerMonitorV2` since early builds, but that only stops Windows from doing automatic bitmap stretching — it does **not** scale anything for you. Every control coordinate in `window.asm` (`CreateWindowExW` calls in `WM_CREATE`, the main window's own creation size, and the `WM_SIZE` repositioning math) was a raw pixel constant authored for 96 DPI (100%). On a scaled display (125%/150%/etc.) the window and every control inside it rendered at their literal 96-DPI pixel size — tiny, with text and buttons cramped or clipped.
+
+Fixed on both architectures:
+
+- `GetDpiForSystem()` / `GetDpiForWindow(hWnd)` (Windows 10 1607+) are queried at window creation, at `WM_CREATE`, and at `WM_SIZE`. Every design-time coordinate is scaled by `value * dpi / 96` before use.
+- The main window's total size is no longer a guessed pixel constant either. A fixed total-window guess has to assume how tall the caption bar, menu bar, and borders are — that overhead varies by Windows theme and font scale across machines, and a wrong guess either clips the bottom row of controls or leaves dead space. The window size is now computed from the **desired client area** via `AdjustWindowRectExForDpi`, which asks Windows for the exact non-client overhead at the current DPI instead of assuming one.
+
+Verified via terminal launches at several DPI scales, both elevated and non-elevated, on real high-DPI hardware where the clipping was originally reported.
+
+### Fix: `build.ps1` couldn't find the VC++ toolchain on newer Visual Studio releases
+
+`vswhere -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64` started returning nothing on a newer VS release even though the C++ toolchain was installed — the component id vswhere expects there no longer matches what the installer registers. Compounding it, VS also renamed the `VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt` marker file the script used to read the active toolchain version from, replacing it with versioned filenames.
+
+`Get-LatestVCToolsPath` in `build.ps1` no longer depends on either. It now lists every VS-Installer-registered product newest-first (`vswhere -all -sort`, no `-requires` filter — a bare `-latest` isn't safe by itself either, since other VS-Installer-registered products like SQL Server Management Studio can sort as "latest" and obviously have no C++ tools), and for each one looks directly for `VC\Tools\MSVC\<version>\bin\Hostx64\x64\ml64.exe`, taking the highest-versioned directory from the first installation that has it.
+
+### File version bumped to 1.0.0.2
+
+Both fixes above (DPI scaling, the double-UAC-prompt regression) shipped in this version.
+
+</details>
+
+<details>
 <summary><strong>12.07.2026 — history made opt-in, `-cli` output relay fixed for already-elevated shells</strong></summary>
 
 Two independent fixes driven by user-filed issues, both verified end-to-end on x64 and mirrored to x86.
@@ -628,7 +696,7 @@ A new CLI switch, `cmdt -history-clear`, performs the same `RegDeleteTreeW` wipe
 
 Reported symptom: running `cmdt_x64.exe -cli net session > out.txt` from an **admin** `cmd.exe` produced an empty file and two blank prompts; the same command from a non-admin shell (which goes through UAC) worked fine.
 
-Root cause: `RunAsTrustedInstaller` always launches the target through `CreateProcessWithTokenW`, which — unlike plain `CreateProcess` — does not reliably hand the spawned child usable inherited std handles. The already-admin dispatch path called it directly with `STARTF_USESTDHANDLES` and inherited/duplicated handles; the non-admin path already avoided this by routing through the temp-file relay (`relay.asm`). The fix: `admin_dispatch` (x64) / `uac_already_admin` (x86) now tries the same relay unconditionally for `-cli`, before falling through to the direct-dispatch code that only still applies to `-new`, interactive shells (`cmd`/`powershell`/`pwsh` with no further arguments), and file-run mode. A new guard checks `argv[2] == "-outfile"` and declines the relay in that case, so the already-elevated relay child (which re-enters the same dispatch code) doesn't try to relay itself again on re-entry — it falls through to `cli.asm`'s existing `-outfile` handling instead, which sets `g_relayHandle` and lets `RunAsTrustedInstaller` write straight to the temp file.
+Root cause: `RunAsTrustedInstaller` always launches the target through `CreateProcessWithTokenW`, which — unlike plain `CreateProcess` — does not reliably hand the spawned child usable inherited std handles. The already-admin dispatch path called it directly with `STARTF_USESTDHANDLES` and inherited/duplicated handles; the non-admin path already avoided this by routing through the temp-file relay (`relay.asm`). The fix: a new `AdminRelayLaunch` routine captures output entirely **in-process** — it opens a local temp file, sets `g_relayHandle`, and calls `RunAsTrustedInstaller` directly (token duplication only), then streams the temp file to the caller's own `STD_OUTPUT_HANDLE`. Critically, this path never calls `ShellExecuteExW("runas")`: an early version of this fix reused the non-admin relay (which *does* shell out via `"runas"`) for the already-admin case too, and re-elevating an already-elevated process that way can still pop a second UAC consent dialog — that regression was caught before release and replaced with the in-process approach described here. `admin_dispatch` (x64) / `uac_already_admin` (x86) routes `-cli` through `AdminRelayLaunch` unconditionally, falling through to direct dispatch only for `-new`, interactive shells (`cmd`/`powershell`/`pwsh` with no further arguments), and file-run mode. A guard checks `argv[2] == "-outfile"` and declines in that case too, so the non-admin relay's own elevated child (which re-enters this same dispatch code as an admin process) doesn't try to relay itself again — it falls through to `cli.asm`'s existing `-outfile` handling instead, which sets `g_relayHandle` and lets `RunAsTrustedInstaller` write straight to the temp file.
 
 Verified: `net session`, `net user`, and `whoami` through `-cli`, with `>`, `>>`, and `| findstr`, from both an admin `cmd.exe` (no UAC prompt) and a non-admin shell (real UAC prompt). `whoami` specifically returns `nt authority\system` — confirmation that the relayed child genuinely carries the TrustedInstaller token, not merely plain Administrator.
 
@@ -759,10 +827,10 @@ During early development, the minimal proof-of-concept builds were significantly
 |---|---|---|
 | CLI-only (no GUI, no registry, no manifest) | **4 KB** | Bare token acquisition + `CreateProcessWithTokenW` |
 | Hybrid GUI/CLI (no registry, no manifest) | **6 KB** | Added window creation, MRU, drag-and-drop |
-| Current full build (x86) | **<25 KB** | Hybrid mode, context menu, UAC self-elevation, manifest, COM `.lnk` resolution |
-| Current full build (x64) | **~30.5 KB** | Same feature set, 64-bit calling convention overhead |
+| Current full build (x86) | **<30 KB** | Hybrid mode, context menu, UAC self-elevation, manifest, COM `.lnk` resolution, system-aware dark mode |
+| Current full build (x64) | **<40 KB** | Same feature set, 64-bit calling convention overhead, DPI-aware layout |
 
-The growth from 4–6 KB to the current size (24 KB on x86, ~30.5 KB on x64) is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, the Sticky Keys IFEO hook with Defender exclusion management, UAC self-elevation, and the wide-character string constants for registry paths and UI text. The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
+The growth from 4–6 KB to the current size (under 30 KB on x86, under 40 KB on x64) is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, the Sticky Keys IFEO hook with Defender exclusion management, UAC self-elevation, the wide-character string constants for registry paths and UI text, and the dark-mode implementation (cached brushes, control theming, and dynamically resolved `uxtheme.dll` ordinals). The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
 
 ---
 

@@ -42,13 +42,15 @@ EXTRN g_hwndStatus:DWORD        ; Status label handle (shows operation status)
 EXTRN g_hConsoleOut:DWORD       ; Console output handle (for CLI mode)
 EXTRN g_hInstance:DWORD         ; Application instance handle (HINSTANCE)
 EXTRN g_relayHandle:DWORD       ; Relay output file handle for elevated -outfile mode
+EXTRN g_relayErrHandle:DWORD    ; Separate relay handle for stderr
+EXTRN g_childExitCode:DWORD     ; Exit code of the last synchronously waited child
 
 ; ==============================================================================
 ; GLOBAL BUFFERS
 ; Large string buffers for command processing and file operations
 ; All buffers are wide character (Unicode) arrays
 ; ==============================================================================
-EXTRN g_cmdBuf:WORD             ; Command line buffer (520 wide chars = 1040 bytes)
+EXTRN g_cmdBuf:WORD             ; Full Win32 command-line buffer (32768 WCHARs)
 EXTRN g_statusBuf:WORD          ; Status message buffer (520 wide chars)
 EXTRN g_filePath:WORD           ; File path buffer (520 wide chars)
 EXTRN g_argsBuf:WORD            ; Arguments buffer (520 wide chars)
@@ -60,6 +62,7 @@ EXTRN g_historyEnabled:DWORD    ; MRU history on/off (reflects HKCU\Software\cmd
 EXTRN g_hMenuFile:DWORD         ; File popup submenu handle (for History checkbox mark)
 EXTRN g_tempDirBuf:WORD         ; Temp dir buffer for relay setup
 EXTRN g_relayPath:WORD          ; Temp file path produced by relay parent
+EXTRN g_relayErrPath:WORD       ; Separate stderr relay temp path
 EXTRN g_relayArgs:WORD          ; Modified args string for elevated relay child
 EXTRN g_relayReadBuf:BYTE       ; Streaming buffer for relay-back to stdout
 

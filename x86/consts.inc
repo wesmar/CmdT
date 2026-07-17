@@ -44,6 +44,7 @@ CREATE_NO_WINDOW            EQU 08000000h ; Create process without console windo
 CREATE_NEW_CONSOLE          EQU 00000010h ; Create new console window for process
 CREATE_UNICODE_ENVIRONMENT  EQU 00000400h ; Environment block is Unicode
 DUPLICATE_SAME_ACCESS       EQU 00000002h ; DuplicateHandle option
+DETACHED_PROCESS            EQU 00000008h ; No console for the child process
 
 ; ==============================================================================
 ; TOOLHELP32 CONSTANTS
@@ -304,3 +305,22 @@ MSG STRUCT
     pt_x    DWORD ?         ; Cursor X position when message posted
     pt_y    DWORD ?         ; Cursor Y position when message posted
 MSG ENDS
+WM_ERASEBKGND               EQU 0014h
+WM_DRAWITEM                 EQU 002Bh
+WM_MEASUREITEM              EQU 002Ch
+WM_SETTINGCHANGE            EQU 001Ah
+WM_THEMECHANGED             EQU 031Ah
+WM_CTLCOLOREDIT             EQU 0133h
+WM_CTLCOLORLISTBOX          EQU 0134h
+WM_CTLCOLORBTN              EQU 0135h
+WM_CTLCOLORSTATIC           EQU 0138h
+MF_OWNERDRAW                EQU 00000100h
+MF_BYPOSITION               EQU 00000400h
+ODS_SELECTED                EQU 0001h
+ODS_DISABLED                EQU 0004h
+ODS_CHECKED                 EQU 0008h
+ODT_MENU                    EQU 1
+TRANSPARENT                 EQU 1
+DT_SINGLELINE               EQU 00000020h
+DT_VCENTER                  EQU 00000004h
+DT_LEFT                     EQU 00000000h

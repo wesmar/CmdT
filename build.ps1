@@ -11,14 +11,44 @@ function Get-LatestVCToolsPath {
     if (-not (Test-Path $vswhere)) {
         throw "Nie znaleziono vswhere.exe pod $vswhere. Zainstaluj/napraw Visual Studio Installer."
     }
-    $vsInstallPath = & $vswhere -latest -products * `
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        -property installationPath
-    if (-not $vsInstallPath) {
-        throw "vswhere nie znalazl instalacji VS z komponentem VC.Tools.x86.x64"
+    # No -requires filter: on newer VS releases (e.g. "18") the
+    # VC.Tools.x86.x64 component id vswhere expects here doesn't match what
+    # the installer actually registered, so the filtered query returns
+    # nothing even though the C++ toolchain is present. But -latest without
+    # -requires isn't safe either: this machine has other VS-Installer-
+    # registered products that can sort as "latest" and obviously have no VC
+    # tools. So: list every installation newest-first and pick the first one
+    # that actually has the C++ toolchain version file.
+    $installs = & $vswhere -all -products * -sort -format json | ConvertFrom-Json
+    if (-not $installs) {
+        throw "vswhere nie znalazl zadnej instalacji Visual Studio"
     }
-    $verFile = Join-Path $vsInstallPath "VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt"
-    $vcVersion = (Get-Content $verFile -Raw).Trim()
+    # The "default.txt" marker file itself moved/was renamed on newer VS
+    # releases (VS "18" ships versioned names like
+    # VC\Auxiliary\Build\14.51\Microsoft.VCToolsVersion.14.51.txt instead of
+    # the old flat Microsoft.VCToolsVersion.default.txt), so don't depend on
+    # it either -- just look for the actual toolchain (ml64.exe) directly
+    # under VC\Tools\MSVC\<version>\bin\Hostx64\x64 and take the
+    # highest-versioned directory.
+    $vsInstallPath = $null
+    $vcVersion = $null
+    foreach ($inst in $installs) {
+        $msvcRoot = Join-Path $inst.installationPath "VC\Tools\MSVC"
+        if (-not (Test-Path $msvcRoot)) { continue }
+        $best = Get-ChildItem $msvcRoot -Directory |
+            Where-Object { Test-Path (Join-Path $_.FullName "bin\Hostx64\x64\ml64.exe") } |
+            Sort-Object { [version]$_.Name } -Descending |
+            Select-Object -First 1
+        if ($best) {
+            $vsInstallPath = $inst.installationPath
+            $vcVersion = $best.Name
+            break
+        }
+    }
+    if (-not $vsInstallPath) {
+        $tried = ($installs | ForEach-Object { $_.installationPath }) -join ', '
+        throw "Zadna z instalacji VS ($tried) nie ma komponentu C++ (VC\Tools\MSVC\<ver>\bin\Hostx64\x64\ml64.exe). Doinstaluj 'Desktop development with C++'."
+    }
     return Join-Path $vsInstallPath "VC\Tools\MSVC\$vcVersion\bin\Hostx64"
 }
 
@@ -67,8 +97,30 @@ if (-not (Test-Path $BinDir)) {
 
 $FILES_X86 = @("main", "token", "process", "window", "strutil", "help", "install", "relay", "cli")
 $FILES_X64 = @("main", "token", "process", "window", "strutil", "help", "install", "relay", "cli")
-$LIBS = @("kernel32.lib", "user32.lib", "advapi32.lib", "shlwapi.lib", "shell32.lib", "gdi32.lib", "comdlg32.lib", "userenv.lib", "ole32.lib", "dwmapi.lib", "OleAut32.lib")
+$LIBS = @("kernel32.lib", "user32.lib", "advapi32.lib", "shlwapi.lib", "shell32.lib", "gdi32.lib", "comdlg32.lib", "userenv.lib", "ole32.lib", "dwmapi.lib", "uxtheme.lib", "OleAut32.lib")
 $BuildSuccess = $true
+
+function Test-BinarySize {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][int64]$LimitBytes,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    $bytes = (Get-Item -LiteralPath $Path).Length
+    $kib = [string]::Format(
+        [Globalization.CultureInfo]::InvariantCulture,
+        "{0:F2}",
+        $bytes / 1KB)
+    Write-Host "Binary size: $Label = $kib KiB ($bytes bytes); limit < $($LimitBytes / 1KB) KiB" -ForegroundColor Cyan
+
+    if ($bytes -ge $LimitBytes) {
+        Write-Host "ERROR: $Label exceeds its binary-size limit" -ForegroundColor Red
+        return $false
+    }
+    Write-Host "[PASS] Binary size is within limit" -ForegroundColor Green
+    return $true
+}
 
 Write-Host ""
 Write-Host ">>> Architecture: x86" -ForegroundColor Cyan
@@ -87,12 +139,15 @@ if ($LASTEXITCODE -ne 0) {
         }
     }
     if ($BuildSuccess) {
-        $linkArgs = @("x86\main.obj", "x86\token.obj", "x86\process.obj", "x86\window.obj", "x86\strutil.obj", "x86\help.obj", "x86\install.obj", "x86\relay.obj", "x86\cli.obj", "cmdt_x86.res", "/subsystem:windows", "/entry:start@0", "/Brepro", "/out:bin\cmdt_x86.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH32_UM", "/LIBPATH:$LIBPATH32_UCRT") + $LIBS
+        $linkArgs = @("x86\main.obj", "x86\token.obj", "x86\process.obj", "x86\window.obj", "x86\strutil.obj", "x86\help.obj", "x86\install.obj", "x86\relay.obj", "x86\cli.obj", "cmdt_x86.res", "/subsystem:console", "/entry:start@0", "/Brepro", "/out:bin\cmdt_x86.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH32_UM", "/LIBPATH:$LIBPATH32_UCRT") + $LIBS
         & $LINK32 $linkArgs
         if ($LASTEXITCODE -ne 0) { 
             $BuildSuccess = $false 
         } else { 
             Write-Host "Build successful: bin\cmdt_x86.exe" -ForegroundColor Green
+            if (-not (Test-BinarySize "$BinDir\cmdt_x86.exe" (30 * 1KB) "x86")) {
+                $BuildSuccess = $false
+            }
             Write-Host "Checking imports..." -ForegroundColor Cyan
             $DUMPBIN32 = "$VSBASE\x86\dumpbin.exe"
             & $DUMPBIN32 /imports "$BinDir\cmdt_x86.exe" | Select-String "msvcr|vcruntime|ucrtbase" | ForEach-Object {
@@ -132,12 +187,15 @@ if ($LASTEXITCODE -ne 0) {
         }
     }
     if ($x64success) {
-        $linkArgs = @("x64\main.obj", "x64\token.obj", "x64\process.obj", "x64\window.obj", "x64\strutil.obj", "x64\help.obj", "x64\install.obj", "x64\relay.obj", "x64\cli.obj", "cmdt_x64.res", "/subsystem:windows", "/entry:mainCRTStartup", "/Brepro", "/out:bin\cmdt_x64.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH64_UM", "/LIBPATH:$LIBPATH64_UCRT") + $LIBS
+        $linkArgs = @("x64\main.obj", "x64\token.obj", "x64\process.obj", "x64\window.obj", "x64\strutil.obj", "x64\help.obj", "x64\install.obj", "x64\relay.obj", "x64\cli.obj", "cmdt_x64.res", "/subsystem:console", "/entry:mainCRTStartup", "/Brepro", "/out:bin\cmdt_x64.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATH64_UM", "/LIBPATH:$LIBPATH64_UCRT") + $LIBS
         & $LINK64 $linkArgs
         if ($LASTEXITCODE -ne 0) { 
             $BuildSuccess = $false 
         } else { 
             Write-Host "Build successful: bin\cmdt_x64.exe" -ForegroundColor Green
+            if (-not (Test-BinarySize "$BinDir\cmdt_x64.exe" (40 * 1KB) "x64")) {
+                $BuildSuccess = $false
+            }
             Write-Host "Checking imports..." -ForegroundColor Cyan
             $DUMPBIN64 = "$VSBASE\x64\dumpbin.exe"
             & $DUMPBIN64 /imports "$BinDir\cmdt_x64.exe" | Select-String "msvcr|vcruntime|ucrtbase" | ForEach-Object {

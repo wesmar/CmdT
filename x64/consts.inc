@@ -37,6 +37,7 @@ PROCESS_QUERY_DUP           EQU 0440h    ; Query + Duplicate combined
 ; ==============================================================================
 CREATE_NO_WINDOW            EQU 08000000h ; Create process without window
 CREATE_NEW_CONSOLE          EQU 00000010h ; Create new console window
+DETACHED_PROCESS            EQU 00000008h ; Do not attach child to console
 CREATE_UNICODE_ENVIRONMENT  EQU 00000400h ; Use Unicode environment block
 
 ; ==============================================================================
@@ -159,6 +160,27 @@ WM_SETTEXT                  EQU 000Ch    ; Set window text
 WM_DROPFILES                EQU 0233h    ; Files dropped
 WM_COPYGLOBALDATA           EQU 0049h    ; Copy global data
 WM_THEMECHANGED             EQU 031Ah    ; Theme change notification
+WM_ERASEBKGND               EQU 0014h
+WM_DRAWITEM                 EQU 002Bh
+WM_MEASUREITEM              EQU 002Ch
+WM_CTLCOLORMSGBOX           EQU 0132h
+WM_CTLCOLOREDIT             EQU 0133h
+WM_CTLCOLORLISTBOX          EQU 0134h
+WM_CTLCOLORBTN              EQU 0135h
+WM_CTLCOLORDLG              EQU 0136h
+WM_CTLCOLORSCROLLBAR        EQU 0137h
+WM_CTLCOLORSTATIC           EQU 0138h
+
+MF_OWNERDRAW                EQU 00000100h
+MF_BYPOSITION               EQU 00000400h
+ODS_SELECTED                EQU 0001h
+ODS_DISABLED                EQU 0004h
+ODS_CHECKED                 EQU 0008h
+ODT_MENU                    EQU 1
+TRANSPARENT                 EQU 1
+DT_SINGLELINE               EQU 00000020h
+DT_VCENTER                  EQU 00000004h
+DT_LEFT                     EQU 00000000h
 
 ; ==============================================================================
 ; MESSAGE BOX FLAGS

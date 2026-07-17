@@ -34,6 +34,7 @@ EXTRN str_newSwitch:WORD
 EXTRN str_extLnk_m:WORD
 EXTRN str_space:WORD
 EXTRN str_outfileFlag:WORD
+EXTRN str_errfileFlag:WORD
 
 ; --- Cross-module jump target inside mainCRTStartup ---
 EXTRN mode_gui:PROC
@@ -54,7 +55,6 @@ EXTRN wcscat_p:PROC
 EXTRN wcscmp_ci:PROC
 EXTRN wcscmp_token:PROC
 EXTRN wcslen_p:PROC
-EXTRN NudgeConsolePrompt:PROC
 
 ; ==============================================================================
 ; CODE SECTION
@@ -377,13 +377,17 @@ outfile_copy:
     ; Copy [rsi..rdi) into g_relayPath, null-terminate.
     lea r10, g_relayPath
     mov r11, rsi
+    xor ecx, ecx
 outfile_copy_loop:
     cmp r11, rdi
     je outfile_copy_done
+    cmp ecx, 259
+    jae cli_failed_setup
     mov ax, word ptr [r11]
     mov word ptr [r10], ax
     add r11, 2
     add r10, 2
+    inc ecx
     jmp outfile_copy_loop
 outfile_copy_done:
     mov word ptr [r10], 0
@@ -428,6 +432,83 @@ outfile_advance_spaces:
     cmp rax, -1
     je after_outfile            ; CreateFile failed → ignore relay
     mov qword ptr g_relayHandle, rax
+
+    ; New relay protocol carries stderr independently so ordinary shell
+    ; redirection (`>out 2>err`) retains its expected semantics. Older
+    ; parents without -errfile remain supported by process.asm's fallback.
+    mov rcx, rsi
+    lea rdx, str_errfileFlag
+    call wcscmp_token
+    test rax, rax
+    jz after_outfile
+    add rsi, 16                         ; length of "-errfile"
+    mov rcx, rsi
+    call skip_spaces
+    mov rsi, rax
+    mov rdi, rsi
+    xor r8, r8
+    cmp word ptr [rdi], '"'
+    jne errfile_scan_unquoted
+    add rdi, 2
+    mov rsi, rdi
+    mov r8, 1
+errfile_scan_quoted:
+    mov ax, word ptr [rdi]
+    test ax, ax
+    jz errfile_copy
+    cmp ax, '"'
+    je errfile_copy
+    add rdi, 2
+    jmp errfile_scan_quoted
+errfile_scan_unquoted:
+    mov ax, word ptr [rdi]
+    test ax, ax
+    jz errfile_copy
+    cmp ax, ' '
+    je errfile_copy
+    add rdi, 2
+    jmp errfile_scan_unquoted
+errfile_copy:
+    lea r10, g_relayErrPath
+    mov r11, rsi
+    xor ecx, ecx
+errfile_copy_loop:
+    cmp r11, rdi
+    je errfile_copy_done
+    cmp ecx, 259                       ; MAX_PATH-1, always reserve terminator
+    jae cli_failed_setup
+    mov ax, word ptr [r11]
+    mov word ptr [r10], ax
+    add r11, 2
+    add r10, 2
+    inc ecx
+    jmp errfile_copy_loop
+errfile_copy_done:
+    mov word ptr [r10], 0
+    mov rsi, rdi
+    test r8, r8
+    jz @F
+    cmp word ptr [rsi], '"'
+    jne @F
+    add rsi, 2
+@@:
+    mov rcx, rsi
+    call skip_spaces
+    mov rsi, rax
+
+    sub rsp, 64
+    mov dword ptr [rsp+32], CREATE_ALWAYS
+    mov dword ptr [rsp+40], FILE_ATTRIBUTE_NORMAL
+    mov qword ptr [rsp+48], 0
+    lea r9, [rbp-104]
+    mov r8d, FILE_SHARE_READ
+    mov edx, GENERIC_WRITE
+    lea rcx, g_relayErrPath
+    call CreateFileW
+    add rsp, 64
+    cmp rax, -1
+    je cli_failed_setup
+    mov qword ptr g_relayErrHandle, rax
 
 after_outfile:
     ; Check if we need to skip the "-new" token
@@ -707,41 +788,57 @@ run_no_lnk:
     add rsp, 32
 
 run_check_result:
+    ; Preserve RunAsTrustedInstaller's BOOL before CloseHandle overwrites RAX.
+    ; The actual waited-child status is carried separately in
+    ; g_childExitCode, allowing a legitimate exit code 0.
+    mov r15d, eax
     ; Close the relay file handle (if any) so the parent reads a flushed,
     ; complete file. OS would close on exit anyway, but doing it here is
     ; explicit and lets the parent observe the file immediately.
     mov rcx, qword ptr g_relayHandle
     test rcx, rcx
-    jz @F
+    jz cli_success_close_err
     sub rsp, 32
     call CloseHandle
     add rsp, 32
     mov qword ptr g_relayHandle, 0
+cli_success_close_err:
+    mov rcx, qword ptr g_relayErrHandle
+    test rcx, rcx
+    jz @F
+    sub rsp, 32
+    call CloseHandle
+    add rsp, 32
+    mov qword ptr g_relayErrHandle, 0
 @@:
     ; Check execution result
-    test rax, rax
+    test r15d, r15d
     jz cli_failed
 
-    call NudgeConsolePrompt
-
-    ; Success: exit with code 0
-    xor ecx, ecx
+    ; Propagate the command's exit status to cmd.exe/PowerShell.
+    mov ecx, dword ptr g_childExitCode
     sub rsp, 32
     call ExitProcess
     add rsp, 32
 
 cli_failed_setup:
 cli_failed:
-    call NudgeConsolePrompt
-
     ; Close relay handle on failure path too
     mov rcx, qword ptr g_relayHandle
+    test rcx, rcx
+    jz cli_failure_close_err
+    sub rsp, 32
+    call CloseHandle
+    add rsp, 32
+    mov qword ptr g_relayHandle, 0
+cli_failure_close_err:
+    mov rcx, qword ptr g_relayErrHandle
     test rcx, rcx
     jz @F
     sub rsp, 32
     call CloseHandle
     add rsp, 32
-    mov qword ptr g_relayHandle, 0
+    mov qword ptr g_relayErrHandle, 0
 @@:
     ; Failure: exit with code 1
     mov ecx, 1

@@ -57,6 +57,12 @@
     ; the parent (non-admin) launched it with the -outfile flag, telling
     ; the child to redirect spawned process stdout/stderr to a temp file.
     EXTRN   g_relayHandle:QWORD
+    EXTRN   g_relayErrHandle:QWORD
+
+    ; Exit code reported by the last synchronously waited child. The process
+    ; routine still returns BOOL, so exit code 0 remains distinct from a
+    ; failure to create the process.
+    EXTRN   g_childExitCode:DWORD
 
     ; Boolean flag: should the spawned command run in a brand new console
     ; window (CREATE_NEW_CONSOLE) instead of inheriting the parent's?
@@ -73,7 +79,7 @@
 ; WORKING BUFFERS
 ; ==============================================================================
 
-    ; Command line buffer (520 wide characters = 1040 bytes)
+    ; Command line buffer (full Win32 32768-WCHAR capacity)
     ; Stores the command to be executed
     EXTRN   g_cmdBuf:WORD
     
@@ -104,6 +110,7 @@
 
     ; Temp file path produced by GetTempFileNameW (relay payload location).
     EXTRN   g_relayPath:WORD
+    EXTRN   g_relayErrPath:WORD
 
     ; Modified argument string built by relay parent for the elevated child.
     EXTRN   g_relayArgs:WORD

@@ -6,7 +6,7 @@
 ; Purpose: Implements the relay path that lets `cmdt -cli <command>` run
 ;          from a non-admin shell still return its child's stdout/stderr to
 ;          the caller's redirect target or console. The trick: spawn an
-;          elevated copy of cmdt with an internal `-outfile <path>` flag
+;          elevated copy of cmdt with internal `-outfile` and `-errfile` paths
 ;          telling it to redirect spawned-process output into a temp file,
 ;          wait for that elevated process to exit, then stream the temp file
 ;          contents back to *this* (non-admin) process's STD_OUTPUT — which
@@ -30,6 +30,7 @@ include globals.inc
 EXTRN str_runas:WORD
 EXTRN str_newSwitch:WORD
 EXTRN str_outfileFlag:WORD
+EXTRN str_errfileFlag:WORD
 
 ; --- Win32 APIs ---
 EXTRN GetModuleFileNameW:PROC
@@ -37,6 +38,7 @@ EXTRN GetTempPathW:PROC
 EXTRN GetTempFileNameW:PROC
 EXTRN ShellExecuteExW:PROC
 EXTRN WaitForSingleObject:PROC
+EXTRN GetExitCodeProcess:PROC
 EXTRN CloseHandle:PROC
 EXTRN CreateFileW:PROC
 EXTRN ReadFile:PROC
@@ -50,8 +52,7 @@ EXTRN wcscpy_p:PROC
 EXTRN wcscat_p:PROC
 EXTRN wcscmp_ci:PROC
 EXTRN skip_spaces:PROC
-
-EXTRN NudgeConsolePrompt:PROC
+EXTRN RunAsTrustedInstaller:PROC
 
 ; ==============================================================================
 ; CONSTANT STRING DATA - private to this module
@@ -64,9 +65,10 @@ str_cmdtPrefix  dw 'C','M','D',0
 
 ; Fixed prefix injected into the elevated child's argument string by the
 ; non-admin parent. The full string built becomes:
-;   "-cli -outfile \"<relay-path>\" <rest of original args after -cli>"
+;   "-cli -outfile \"<stdout-path>\" -errfile \"<stderr-path>\" <command>"
 str_relayPrefix dw '-','c','l','i',' ','-','o','u','t','f','i','l','e',' ','"',0
-str_relayMid    dw '"',' ',0
+str_relayMid    dw '"',' ','-','e','r','r','f','i','l','e',' ','"',0
+str_relayTail   dw '"',' ',0
 
 ; Interactive shells that cannot tolerate the relay path (CREATE_NO_WINDOW +
 ; redirected stdout to a temp file). When the user runs `cmdt -cli <shell>`
@@ -136,6 +138,7 @@ NonAdminRelayLaunch proc frame
 
     mov r12, r8                 ; r12 = raw cmdline
     mov r13, rdx                ; r13 = argv
+    mov dword ptr [rsp+168], 1  ; relay/elevated-child exit status
 
     ; If user requested -new, the spawned command must run in a visible new
     ; console window — that conflicts with output capture (which requires
@@ -154,13 +157,10 @@ NonAdminRelayLaunch proc frame
     test rax, rax
     jnz narl_decline
 
-    ; The elevated relay child itself is launched as:
+    ; The elevated relay child is launched as:
     ;   cmdt -cli -outfile "<temp>" <command>
-    ; Now that admin_dispatch tries this relay unconditionally (issue #1
-    ; fix), that already-elevated child would otherwise try to relay-launch
-    ; itself again on re-entry. Decline so it falls through to normal
-    ; dispatch, where cli.asm's own -outfile handling sets g_relayHandle
-    ; and RunAsTrustedInstaller writes to the temp file directly.
+    ; It must execute the command and write to the temp file, not start a
+    ; second relay cycle.
     mov rcx, [r13+16]                   ; argv[2]
     lea rdx, str_outfileFlag
     call wcscmp_ci
@@ -213,6 +213,14 @@ narl_setup:
     test eax, eax
     jz narl_decline
 
+    lea rcx, g_tempDirBuf
+    lea rdx, str_cmdtPrefix
+    xor r8d, r8d
+    lea r9, g_relayErrPath
+    call GetTempFileNameW
+    test eax, eax
+    jz narl_delete_stdout_decline
+
     ; Build the modified argument string in g_relayArgs:
     ;   "-cli -outfile \"" + g_relayPath + "\" " + REST
     ; where REST is everything in the original cmdline after the "-cli"
@@ -228,6 +236,14 @@ narl_setup:
 
     lea rcx, g_relayArgs
     lea rdx, str_relayMid
+    call wcscat_p
+
+    lea rcx, g_relayArgs
+    lea rdx, g_relayErrPath
+    call wcscat_p
+
+    lea rcx, g_relayArgs
+    lea rdx, str_relayTail
     call wcscat_p
 
     ; Locate REST by walking the raw cmdline: skip exe path, then skip
@@ -314,6 +330,10 @@ narl_append_rest:
     call WaitForSingleObject
 
     mov rcx, qword ptr [rsp+40+104]
+    lea rdx, [rsp+168]
+    call GetExitCodeProcess     ; failure leaves conservative status 1
+
+    mov rcx, qword ptr [rsp+40+104]
     call CloseHandle
 
 narl_open_file:
@@ -337,7 +357,9 @@ narl_open_file:
     mov rbx, rax                ; rbx = relay-file read handle
 
     ; Get our STD_OUTPUT_HANDLE (the parent shell wired this up, either as
-    ; its console or as a redirected file/pipe).
+    ; its console or as a redirected file/pipe). Relay bytes are copied
+    ; unchanged because console programs redirected to the temp file usually
+    ; write OEM/ANSI bytes, not UTF-16 WCHARs.
     mov ecx, STD_OUTPUT_HANDLE
     call GetStdHandle
     mov r15, rax
@@ -369,16 +391,57 @@ narl_close_file:
     mov rcx, rbx
     call CloseHandle
 
-narl_delete_only:
-    call NudgeConsolePrompt
+    ; Replay stderr through this process's original STDERR handle, preserving
+    ; independent `1>` and `2>` redirection across the UAC boundary.
+    sub rsp, 32
+    mov dword ptr [rsp+32], OPEN_EXISTING
+    mov dword ptr [rsp+40], FILE_ATTRIBUTE_NORMAL
+    mov qword ptr [rsp+48], 0
+    xor r9, r9
+    mov r8d, FILE_SHARE_READ
+    mov edx, GENERIC_READ
+    lea rcx, g_relayErrPath
+    call CreateFileW
+    add rsp, 32
+    cmp rax, -1
+    je narl_delete_only
+    mov rbx, rax
+    mov ecx, STD_ERROR_HANDLE
+    call GetStdHandle
+    mov r15, rax
+narl_err_copy_loop:
+    lea r9, [rsp+152]
+    mov r8d, 4096
+    lea rdx, g_relayReadBuf
+    mov rcx, rbx
+    mov qword ptr [rsp+32], 0
+    call ReadFile
+    test eax, eax
+    jz narl_err_close
+    mov eax, dword ptr [rsp+152]
+    test eax, eax
+    jz narl_err_close
+    lea r9, [rsp+160]
+    mov r8d, eax
+    lea rdx, g_relayReadBuf
+    mov rcx, r15
+    mov qword ptr [rsp+32], 0
+    call WriteFile
+    jmp narl_err_copy_loop
+narl_err_close:
+    mov rcx, rbx
+    call CloseHandle
 
+narl_delete_only:
     ; Delete the temp file (best effort) and exit the process. Once we've
     ; spawned and waited on the elevated child we don't return to the
     ; caller — there's no useful fallback left at this point.
     lea rcx, g_relayPath
     call DeleteFileW
+    lea rcx, g_relayErrPath
+    call DeleteFileW
 
-    xor ecx, ecx
+    mov ecx, dword ptr [rsp+168]
     call ExitProcess
 
 narl_decline:
@@ -394,6 +457,347 @@ narl_decline:
     pop rsi
     pop rbx
     ret
+narl_delete_stdout_decline:
+    lea rcx, g_relayPath
+    call DeleteFileW
+    jmp narl_decline
 NonAdminRelayLaunch endp
+
+; ==============================================================================
+; AdminRelayLaunch - Output-relay for -cli when the caller is ALREADY elevated
+;
+; Same problem as NonAdminRelayLaunch (RunAsTrustedInstaller's
+; CreateProcessWithTokenW doesn't reliably hand the child usable inherited
+; std handles), but the caller here is already Administrator, so re-elevating
+; through ShellExecuteExW("runas") would be wrong -- "runas" can still pop a
+; second UAC consent prompt even from an elevated process, which is exactly
+; the double-prompt regression this routine exists to avoid. Instead this
+; captures output entirely in-process: open a local temp file, set
+; g_relayHandle, call RunAsTrustedInstaller directly (token duplication only,
+; no shell elevation, no second prompt), then stream the temp file to our own
+; STD_OUTPUT_HANDLE, exactly like the non-admin path does after its child
+; returns.
+;
+; Note: unlike NonAdminRelayLaunch's non-admin path, this does not call
+; NudgeConsolePrompt -- that helper compensates for cmd.exe not waiting on
+; GUI-subsystem child processes, which does not apply here (this build is
+; console-subsystem, so cmd.exe already waits for us correctly).
+;
+; Parameters:
+;   ECX = argc
+;   RDX = argv pointer
+;   R8  = raw command-line string from GetCommandLineW
+;
+; Returns:
+;   RAX = 0 if declined (-new flag present, or an interactive shell target).
+;         Caller should fall through to normal admin dispatch.
+;   Never returns once the local run has started -- every path past that
+;   point ends in ExitProcess.
+; ==============================================================================
+AdminRelayLaunch proc frame
+    push rbx
+    .pushreg rbx
+    push rsi
+    .pushreg rsi
+    push rdi
+    .pushreg rdi
+    push r12
+    .pushreg r12
+    push r13
+    .pushreg r13
+    push r14
+    .pushreg r14
+    push r15
+    .pushreg r15
+    sub rsp, 224
+    .allocstack 224
+    .endprolog
+
+    mov r12, r8                 ; r12 = raw cmdline
+    mov r13, rdx                ; r13 = argv
+
+    ; -new conflicts with output capture (needs CREATE_NO_WINDOW) -- decline,
+    ; same rule as the non-admin relay.
+    cmp ecx, 3
+    jl arl_setup
+
+    mov ebx, ecx                ; stash argc
+
+    mov rcx, [r13+16]           ; argv[2]
+    lea rdx, str_newSwitch
+    call wcscmp_ci
+    test rax, rax
+    jnz arl_decline
+
+    ; If the non-admin relay's elevated child lands here (it is itself
+    ; already-admin once UAC finishes), argv[2] is the internal "-outfile"
+    ; token, not a real command. Decline so it falls through to the normal
+    ; dispatch, where cli.asm's own -outfile parsing sets g_relayHandle and
+    ; RunAsTrustedInstaller writes to that temp file directly (Mode 3).
+    mov rcx, [r13+16]           ; argv[2]
+    lea rdx, str_outfileFlag
+    call wcscmp_ci
+    test rax, rax
+    jnz arl_decline
+
+    ; Interactive-shell guard, same as the non-admin path: `cmdt -cli cmd`
+    ; with no further args needs a real console, not a captured temp file.
+    cmp ebx, 3
+    jne arl_setup
+
+    lea r14, shell_names_table
+arl_shell_loop:
+    mov rdx, qword ptr [r14]
+    test rdx, rdx
+    jz arl_setup
+    mov rcx, [r13+16]           ; argv[2]
+    call wcscmp_ci
+    test rax, rax
+    jnz arl_decline
+    add r14, 8
+    jmp arl_shell_loop
+
+arl_setup:
+    ; Temp file to capture the child's stdout/stderr.
+    lea rdx, g_tempDirBuf
+    mov ecx, 260
+    call GetTempPathW
+    test eax, eax
+    jz arl_decline
+
+    lea rcx, g_tempDirBuf
+    lea rdx, str_cmdtPrefix
+    xor r8d, r8d
+    lea r9, g_relayPath
+    call GetTempFileNameW
+    test eax, eax
+    jz arl_decline
+
+    lea rcx, g_tempDirBuf
+    lea rdx, str_cmdtPrefix
+    xor r8d, r8d
+    lea r9, g_relayErrPath
+    call GetTempFileNameW
+    test eax, eax
+    jz arl_delete_stdout_decline
+
+    ; Open it for inheritable write access -- same SECURITY_ATTRIBUTES shape
+    ; cli.asm uses for the -outfile protocol. Laid out at [rsp+40] (24 bytes).
+    mov dword ptr [rsp+40], 24
+    mov dword ptr [rsp+44], 0
+    mov qword ptr [rsp+48], 0
+    mov dword ptr [rsp+56], 1
+    mov dword ptr [rsp+60], 0
+
+    sub rsp, 64
+    mov dword ptr [rsp+32], CREATE_ALWAYS
+    mov dword ptr [rsp+40], FILE_ATTRIBUTE_NORMAL
+    mov qword ptr [rsp+48], 0
+    lea r9, [rsp+64+40]
+    mov r8d, FILE_SHARE_READ
+    mov edx, GENERIC_WRITE
+    lea rcx, g_relayPath
+    call CreateFileW
+    add rsp, 64
+    cmp rax, -1
+    je arl_decline
+    mov qword ptr g_relayHandle, rax
+
+    sub rsp, 64
+    mov dword ptr [rsp+32], CREATE_ALWAYS
+    mov dword ptr [rsp+40], FILE_ATTRIBUTE_NORMAL
+    mov qword ptr [rsp+48], 0
+    lea r9, [rsp+64+40]
+    mov r8d, FILE_SHARE_READ
+    mov edx, GENERIC_WRITE
+    lea rcx, g_relayErrPath
+    call CreateFileW
+    add rsp, 64
+    cmp rax, -1
+    je arl_close_stdout_decline
+    mov qword ptr g_relayErrHandle, rax
+
+    ; Locate REST (everything after "-cli") by walking the raw cmdline --
+    ; identical skip logic to the non-admin path, but the result is copied
+    ; straight into g_cmdBuf instead of concatenated after -outfile, because
+    ; there's no re-spawn: RunAsTrustedInstaller runs REST directly.
+    mov rsi, r12
+    xor edi, edi
+arl_skip_exe:
+    mov ax, word ptr [rsi]
+    test ax, ax
+    jz arl_run
+    cmp ax, '"'
+    jne @F
+    xor edi, 1
+@@:
+    cmp ax, ' '
+    jne @F
+    test edi, edi
+    jnz @F
+    add rsi, 2
+    mov rcx, rsi
+    call skip_spaces
+    mov rsi, rax
+    jmp arl_skip_cli
+@@:
+    add rsi, 2
+    jmp arl_skip_exe
+
+arl_skip_cli:
+    mov ax, word ptr [rsi]
+    test ax, ax
+    jz arl_run
+    cmp ax, ' '
+    jne @F
+    add rsi, 2
+    mov rcx, rsi
+    call skip_spaces
+    mov rsi, rax
+    jmp arl_run
+@@:
+    add rsi, 2
+    jmp arl_skip_cli
+
+arl_run:
+    mov word ptr g_cmdBuf, 0
+    lea rcx, g_cmdBuf
+    mov rdx, rsi
+    call wcscpy_p
+
+    ; RunAsTrustedInstaller sees g_relayHandle != 0 and runs relay Mode 3:
+    ; CREATE_NO_WINDOW, stdout/stderr -> our temp file, waits for the child
+    ; internally. No ShellExecuteExW anywhere in this path -- token
+    ; duplication only, so no second UAC prompt.
+    lea rcx, g_cmdBuf
+    xor edx, edx
+    call RunAsTrustedInstaller
+    mov r14d, eax               ; preserve BOOL across all relay cleanup
+
+    ; Close the write handle so the file is flushed before we read it back.
+    mov rcx, qword ptr g_relayHandle
+    call CloseHandle
+    mov qword ptr g_relayHandle, 0
+    mov rcx, qword ptr g_relayErrHandle
+    call CloseHandle
+    mov qword ptr g_relayErrHandle, 0
+
+    ; Re-open for read and stream to our own STD_OUTPUT_HANDLE, same as the
+    ; non-admin path's narl_open_file onward.
+    sub rsp, 32
+    mov dword ptr [rsp+32], OPEN_EXISTING
+    mov dword ptr [rsp+40], FILE_ATTRIBUTE_NORMAL
+    mov qword ptr [rsp+48], 0
+    xor r9, r9
+    mov r8d, FILE_SHARE_READ
+    mov edx, GENERIC_READ
+    lea rcx, g_relayPath
+    call CreateFileW
+    add rsp, 32
+    cmp rax, -1
+    je arl_delete_only
+    mov rbx, rax                ; rbx = relay-file read handle
+
+    mov ecx, STD_OUTPUT_HANDLE
+    call GetStdHandle
+    mov r15, rax
+
+arl_copy_loop:
+    lea r9, [rsp+152]
+    mov r8d, 4096
+    lea rdx, g_relayReadBuf
+    mov rcx, rbx
+    mov qword ptr [rsp+32], 0
+    call ReadFile
+    test eax, eax
+    jz arl_close_file
+    mov eax, dword ptr [rsp+152]
+    test eax, eax
+    jz arl_close_file
+
+    lea r9, [rsp+160]
+    mov r8d, eax
+    lea rdx, g_relayReadBuf
+    mov rcx, r15
+    mov qword ptr [rsp+32], 0
+    call WriteFile
+    jmp arl_copy_loop
+
+arl_close_file:
+    mov rcx, rbx
+    call CloseHandle
+
+    sub rsp, 32
+    mov dword ptr [rsp+32], OPEN_EXISTING
+    mov dword ptr [rsp+40], FILE_ATTRIBUTE_NORMAL
+    mov qword ptr [rsp+48], 0
+    xor r9, r9
+    mov r8d, FILE_SHARE_READ
+    mov edx, GENERIC_READ
+    lea rcx, g_relayErrPath
+    call CreateFileW
+    add rsp, 32
+    cmp rax, -1
+    je arl_delete_only
+    mov rbx, rax
+    mov ecx, STD_ERROR_HANDLE
+    call GetStdHandle
+    mov r15, rax
+arl_err_copy_loop:
+    lea r9, [rsp+152]
+    mov r8d, 4096
+    lea rdx, g_relayReadBuf
+    mov rcx, rbx
+    mov qword ptr [rsp+32], 0
+    call ReadFile
+    test eax, eax
+    jz arl_err_close
+    mov eax, dword ptr [rsp+152]
+    test eax, eax
+    jz arl_err_close
+    lea r9, [rsp+160]
+    mov r8d, eax
+    lea rdx, g_relayReadBuf
+    mov rcx, r15
+    mov qword ptr [rsp+32], 0
+    call WriteFile
+    jmp arl_err_copy_loop
+arl_err_close:
+    mov rcx, rbx
+    call CloseHandle
+
+arl_delete_only:
+    lea rcx, g_relayPath
+    call DeleteFileW
+    lea rcx, g_relayErrPath
+    call DeleteFileW
+
+    mov ecx, 1
+    test r14d, r14d
+    jz @F
+    mov ecx, dword ptr g_childExitCode
+@@:
+    call ExitProcess
+
+arl_decline:
+    xor eax, eax
+    add rsp, 224
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+arl_close_stdout_decline:
+    mov rcx, qword ptr g_relayHandle
+    call CloseHandle
+    mov qword ptr g_relayHandle, 0
+arl_delete_stdout_decline:
+    lea rcx, g_relayPath
+    call DeleteFileW
+    jmp arl_decline
+AdminRelayLaunch endp
 
 end

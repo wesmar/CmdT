@@ -40,6 +40,9 @@ EXTRN DeleteFileW:PROC
 EXTRN GetTempPathW:PROC
 EXTRN GetTempFileNameW:PROC
 EXTRN RegDeleteTreeW:PROC
+EXTRN GetConsoleWindow:PROC
+EXTRN ShowWindow:PROC
+EXTRN GetConsoleProcessList:PROC
 
 ; MRU registry key path string, defined in window.asm (PUBLIC there) so the
 ; -history-clear CLI switch shares the single source of truth for the path.
@@ -66,6 +69,8 @@ EXTRN UninstallShift:PROC
 
 ; Non-admin output relay (defined in relay.asm)
 EXTRN NonAdminRelayLaunch:PROC
+; Already-elevated output relay -- no re-elevation, no second UAC prompt
+EXTRN AdminRelayLaunch:PROC
 
 ; CLI / file-run dispatch (defined in cli.asm)
 EXTRN mode_cli_found:PROC
@@ -83,7 +88,7 @@ EXTRN mode_file_run:PROC
 ; Strings shared with relay.asm and cli.asm (made PUBLIC so cross-module
 ; references resolve at link time). Help-switch and install-switch strings
 ; are dispatcher-only and stay private to this module.
-PUBLIC str_runas, str_newSwitch, str_extLnk_m, str_space, str_outfileFlag
+PUBLIC str_runas, str_newSwitch, str_extLnk_m, str_space, str_outfileFlag, str_errfileFlag
 
 ; Command-line switch for CLI mode
 str_cliSwitch1  dw '-','c','l','i',0           ; CLI mode switch
@@ -92,6 +97,7 @@ str_cliSwitch1  dw '-','c','l','i',0           ; CLI mode switch
 ; child's stdout/stderr to a temporary file for relaying back to the
 ; original shell's stdout (handles UAC handle-inheritance limitation).
 str_outfileFlag dw '-','o','u','t','f','i','l','e',0
+str_errfileFlag dw '-','e','r','r','f','i','l','e',0
 
 ; Switch to request new console window
 str_newSwitch   dw '-','n','e','w',0
@@ -207,6 +213,14 @@ g_useNewConsole dd 0
 ; Application instance handle
 g_hInstance     dq 0
 
+; Handle to output-relay file (set in elevated child when -outfile flag is
+; present on the command line). Zero means no relay.
+PUBLIC g_relayHandle, g_relayErrHandle, g_childExitCode
+g_relayHandle   dq 0
+g_relayErrHandle dq 0
+g_childExitCode dd 1            ; Conservative default until a child is waited
+                dd 0
+
 ; History feature state: 1 if the "Enable History" menu checkbox is on
 ; (MRU reads/writes to HKCU\Software\cmdt are allowed), 0 if off (no
 ; registry touch at all). Determined at startup from whether the registry
@@ -219,11 +233,6 @@ g_historyEnabled dd 0
 ; owns the item, not the top-level menu bar).
 g_hMenuFile     dq 0
 
-; Handle to output-relay file (set in elevated child when -outfile flag is
-; present on the command line). Zero means no relay.
-PUBLIC g_relayHandle
-g_relayHandle   dq 0
-
 ; ==============================================================================
 ; UNINITIALIZED DATA SECTION
 ; ==============================================================================
@@ -231,10 +240,10 @@ g_relayHandle   dq 0
 
 ; Export buffer declarations for use by other modules
 PUBLIC g_cmdBuf, g_statusBuf, g_filePath, g_argsBuf, g_tempBuf, g_exePath, g_decryptBuf
-PUBLIC g_relayPath, g_tempDirBuf, g_relayArgs, g_relayReadBuf
+PUBLIC g_relayPath, g_relayErrPath, g_tempDirBuf, g_relayArgs, g_relayReadBuf
 
 ; Buffer for command line text (520 WCHARs = 1040 bytes)
-g_cmdBuf        dw 520 dup(?)
+g_cmdBuf        dw 32768 dup(?)       ; Full Win32 command-line capacity
 
 ; Buffer for status text (520 WCHARs)
 g_statusBuf     dw 520 dup(?)
@@ -259,10 +268,11 @@ g_tempDirBuf    dw 260 dup(?)
 
 ; Relay temp file full path produced by GetTempFileNameW (MAX_PATH WCHARs)
 g_relayPath     dw 260 dup(?)
+g_relayErrPath  dw 260 dup(?)
 
 ; Buffer used to build the modified arguments string passed to the elevated
 ; child via ShellExecuteExW (`-cli -outfile <path> <rest>`)
-g_relayArgs     dw 1040 dup(?)
+g_relayArgs     dw 65536 dup(?)       ; Cmdline plus two quoted relay paths
 
 ; Scratch buffer used to stream temp-file bytes back to original stdout
 g_relayReadBuf  db 4096 dup(?)
@@ -401,11 +411,51 @@ early_attach_done:
     add rsp, 32
 
 early_help_skip:
-    ; ===== Admin check =====
+    ; ===== Admin check (moved up so the CLI relay below can pick the
+    ; correct relay function for the current elevation state) =====
     sub rsp, 32
     call IsUserAnAdmin
     add rsp, 32
-    test eax, eax
+    mov ebx, eax                ; stash: 0 = non-admin, nonzero = admin
+
+    ; ===== CLI output relay (admin and non-admin) =====
+    ; Passing console handles directly through CreateProcessWithTokenW is not
+    ; reliable for TI children. For plain -cli commands, route stdout/stderr
+    ; through a temp-file relay even when the caller is already elevated.
+    ; Already-admin uses AdminRelayLaunch (in-process, no ShellExecuteExW --
+    ; re-elevating an already-elevated process via "runas" can pop a second
+    ; UAC consent prompt, which NonAdminRelayLaunch would do here since it
+    ; shells out unconditionally). Non-admin still needs NonAdminRelayLaunch's
+    ; real UAC self-elevation. Both decline for -new, interactive shells, and
+    ; the internal -outfile child path; those continue into normal dispatch.
+    test r13, r13
+    jz cli_relay_done
+    mov eax, dword ptr [rbp-64]
+    cmp eax, 2
+    jl cli_relay_done
+
+    mov r14, [r13+8]            ; argv[1]
+    lea rdx, str_cliSwitch1
+    mov rcx, r14
+    call wcscmp_ci
+    test rax, rax
+    jz cli_relay_done           ; argv[1] != "-cli"
+
+    mov ecx, dword ptr [rbp-64] ; argc
+    mov rdx, r13                ; argv
+    mov r8, r12                 ; cmdline
+    sub rsp, 32
+    test ebx, ebx
+    jz cli_relay_nonadmin
+    call AdminRelayLaunch
+    jmp cli_relay_ret
+cli_relay_nonadmin:
+    call NonAdminRelayLaunch
+cli_relay_ret:
+    add rsp, 32
+
+cli_relay_done:
+    test ebx, ebx
     jnz admin_dispatch
 
     ; ===== Non-admin: decide between relay and plain UAC self-elevate =====
@@ -524,38 +574,6 @@ uac_zero:
     add rsp, 32
 
 admin_dispatch:
-    ; ===== CLI output relay, even when already elevated =====
-    ; RunAsTrustedInstaller always launches through CreateProcessWithTokenW,
-    ; which — unlike plain CreateProcess — does not reliably hand the child
-    ; process usable inherited std handles (see process.asm's "Mode 1"
-    ; comment). That breaks `cmdt -cli <cmd> > out.txt` even when the caller
-    ; is already an elevated Administrator (issue #1: empty output in an
-    ; admin cmd.exe). Route -cli through the same temp-file relay used for
-    ; the non-admin case regardless of current elevation. NonAdminRelayLaunch
-    ; declines (returns 0) for -new, interactive shells, and the internal
-    ; -outfile relay child itself — those fall through to the unchanged
-    ; dispatch below.
-    test r13, r13
-    jz admin_relay_done
-    mov eax, dword ptr [rbp-64]
-    cmp eax, 2
-    jl admin_relay_done
-
-    mov r14, [r13+8]            ; argv[1]
-    lea rdx, str_cliSwitch1
-    mov rcx, r14
-    call wcscmp_ci
-    test rax, rax
-    jz admin_relay_done         ; argv[1] != "-cli"
-
-    mov ecx, dword ptr [rbp-64] ; argc
-    mov rdx, r13                ; argv
-    mov r8, r12                 ; cmdline
-    sub rsp, 32
-    call NonAdminRelayLaunch
-    add rsp, 32
-
-admin_relay_done:
     ; Free early-parse argv (uac_already_admin will re-parse, matching
     ; original behavior). This keeps later dispatch self-contained.
     test r13, r13
@@ -704,11 +722,13 @@ mode_historyclear_found:
     sub rsp, 32
     call LocalFree
     add rsp, 32
+
     lea rdx, str_regKey
     mov ecx, HKEY_CURRENT_USER
     sub rsp, 32
     call RegDeleteTreeW
     add rsp, 32
+
     xor ecx, ecx
     sub rsp, 32
     call ExitProcess
@@ -719,6 +739,40 @@ mode_gui_free:
     mov rcx, r13
     sub rsp, 32
     call LocalFree
+    add rsp, 32
+
+    ; No-args GUI launch: x64 is console subsystem, so the OS already
+    ; created a console window for this process before any of our code ran
+    ; -- that part can't be avoided. What we CAN do is hide it immediately,
+    ; in-process. No second process, no CreateProcessW round-trip -- just
+    ; two Win32 calls before falling straight into mode_gui, which is the
+    ; fastest we can get the window hidden.
+    ;
+    ; Safety check: only hide it if this console is EXCLUSIVELY ours (the
+    ; common Explorer double-click / shortcut / Run-dialog case, where the
+    ; OS spun up a fresh console solely for this process). If the user typed
+    ; "cmdt" with no args inside an EXISTING cmd.exe session, the console is
+    ; shared -- GetConsoleProcessList reports more than one attached
+    ; process -- and hiding it would hide the user's whole shell window. In
+    ; that case leave it alone; opening the GUI on top of an already-visible
+    ; console is normal, expected behavior, not a flash bug.
+    lea rcx, [rbp-72]
+    mov edx, 1
+    sub rsp, 32
+    call GetConsoleProcessList
+    add rsp, 32
+    cmp eax, 1
+    jne mode_gui                 ; shared (or unknown) console: leave it alone
+
+    sub rsp, 32
+    call GetConsoleWindow
+    add rsp, 32
+    test rax, rax
+    jz mode_gui                  ; no console window to hide
+    mov rcx, rax
+    mov edx, SW_HIDE
+    sub rsp, 32
+    call ShowWindow
     add rsp, 32
     jmp mode_gui                ; transfer into the GUI proc (which never
                                 ; returns) — control never falls through

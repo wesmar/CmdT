@@ -23,10 +23,6 @@ option casemap:none             ; Case-sensitive symbol names
 
 include consts.inc              ; Windows API constants and structures
 
-; MRU registry key path string, defined in window.asm (PUBLIC there) so the
-; -history-clear CLI switch shares the single source of truth for the path.
-EXTRN str_regKey:WORD
-
 ; ==============================================================================
 ; EXTERNAL FUNCTION PROTOTYPES
 ; ==============================================================================
@@ -69,7 +65,6 @@ GetModuleFileNameW      PROTO :DWORD,:DWORD,:DWORD
 RegCreateKeyExW         PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 RegSetValueExW          PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 RegDeleteKeyW           PROTO :DWORD,:DWORD
-RegDeleteTreeW          PROTO :DWORD,:DWORD
 RegCloseKey             PROTO :DWORD
 AttachConsole           PROTO :DWORD
 GetStdHandle            PROTO :DWORD
@@ -86,6 +81,9 @@ RegDeleteValueW         PROTO :DWORD,:DWORD
 RegOpenKeyExW           PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 WaitForSingleObject     PROTO :DWORD,:DWORD
 CloseHandle             PROTO :DWORD
+GetConsoleWindow        PROTO
+ShowWindow              PROTO :DWORD,:DWORD
+GetConsoleProcessList   PROTO :DWORD,:DWORD
 
 ; Installation / hook management (defined in install.asm)
 InstallContextMenu      PROTO
@@ -95,6 +93,13 @@ UninstallShift          PROTO
 
 ; Non-admin output relay (defined in relay.asm)
 NonAdminRelayLaunch     PROTO :DWORD,:DWORD,:DWORD
+; Already-elevated output relay -- no re-elevation, no second UAC prompt
+AdminRelayLaunch        PROTO :DWORD,:DWORD,:DWORD
+
+; MRU registry key path string, defined in window.asm (PUBLIC there) so the
+; -history-clear CLI switch shares the single source of truth for the path.
+EXTRN str_regKey:WORD
+RegDeleteTreeW          PROTO :DWORD,:DWORD
 
 ; CLI / file-run dispatch targets (defined in cli.asm). These are reached
 ; via JMP rather than CALL — they share start's stack frame for sei
@@ -114,18 +119,23 @@ mode_gui                PROTO
 ; Strings shared with relay.asm and (later) cli.asm. PUBLIC so cross-module
 ; references resolve at link time. Help / install switches stay private —
 ; they are only consulted in the dispatcher inside `start`.
-PUBLIC str_runas, str_newSwitch, str_extLnk_m, str_space, str_outfileFlag
+PUBLIC str_runas, str_newSwitch, str_extLnk_m, str_space, str_outfileFlag, str_errfileFlag
 
 ; Command-line switch variations for CLI mode
 str_cliSwitch1  dw '-','c','l','i',0      ; Standard Unix-style switch
 str_cliSwitch2  dw '-','-','c','l','i',0  ; GNU-style long option
 str_cliSwitch3  dw 'c','l','i',0          ; Bare switch without hyphen
 
+; Wipe the MRU command-history registry key (HKCU\Software\cmdt), for users
+; who never open the GUI but still want the stored history gone
+str_historyClearSwitch dw '-','h','i','s','t','o','r','y','-','c','l','e','a','r',0
+
 ; Switch for new console window creation
 str_newSwitch   dw '-','n','e','w',0
 
 ; Internal relay switch used by non-admin -cli parent.
 str_outfileFlag dw '-','o','u','t','f','i','l','e',0
+str_errfileFlag dw '-','e','r','r','f','i','l','e',0
 
 ; File extension strings
 str_extLnk_m    dw '.','l','n','k',0      ; Windows shortcut extension
@@ -143,10 +153,6 @@ str_uninstallSwitch dw '-','u','n','i','n','s','t','a','l','l',0
 ; Sticky Keys (sethc.exe) IFEO switches
 str_shiftSwitch     dw '-','s','h','i','f','t',0
 str_unshiftSwitch   dw '-','u','n','s','h','i','f','t',0
-
-; Wipe the MRU command-history registry key (HKCU\Software\cmdt), for users
-; who never open the GUI but still want the stored history gone
-str_historyClearSwitch dw '-','h','i','s','t','o','r','y','-','c','l','e','a','r',0
 
 ; ==============================================================================
 ; PRIVILEGE STRING DEFINITIONS
@@ -212,9 +218,9 @@ g_privTable dd offset privStr_0,offset privStr_1,offset privStr_2,offset privStr
 
 ; Global variables exported for use in other modules
 PUBLIC g_cachedToken, g_tokenTime, g_hwndMain, g_hwndEdit, g_hwndBtn, g_hwndStatus, g_hConsoleOut, g_hInstance
-PUBLIC g_useNewConsole, g_relayHandle
-PUBLIC g_historyEnabled, g_hMenuFile
+PUBLIC g_useNewConsole, g_relayHandle, g_relayErrHandle, g_childExitCode
 PUBLIC g_argv, g_argc, g_argv1, g_sa
+PUBLIC g_historyEnabled, g_hMenuFile
 PUBLIC privPrefix, privSuffix
 ; FixRegeditPath moved to cli.asm (PUBLIC declared there)
 
@@ -228,16 +234,18 @@ g_hConsoleOut   dd 0                        ; Console output handle (CLI mode)
 g_useNewConsole dd 0                        ; Flag: create new console window
 g_hInstance     dd 0                        ; Application instance handle
 g_relayHandle   dd 0                        ; Output relay file handle for elevated child
+g_relayErrHandle dd 0                       ; Separate stderr relay handle
+g_childExitCode dd 1                        ; Last synchronously waited child exit code
 
-; History feature state: 1 if "Enable History" is checked (MRU reads/writes
-; to HKCU\Software\cmdt allowed), 0 if off (no registry touch at all).
-; Determined at startup from whether the registry key already exists.
+; History feature state: 1 if the "Enable History" menu checkbox is on
+; (MRU reads/writes to HKCU\Software\cmdt are allowed), 0 if off (no
+; registry touch at all). Determined at startup from whether the registry
+; key already exists, then toggled live from the File menu.
 g_historyEnabled dd 0
 
 ; File popup submenu handle, kept so WM_COMMAND can update the "Enable
-; History" checkbox mark (CheckMenuItem needs the menu that directly owns
-; the item, not the top-level menu bar). WndProc's hFileMenu is a LOCAL
-; and does not survive between separate WM_COMMAND invocations.
+; History" checkbox mark (CheckMenuItem needs the menu that directly
+; owns the item, not the top-level menu bar).
 g_hMenuFile     dd 0
 
 ; Command-line parse outputs from `start` — promoted from LOCALs to globals
@@ -257,9 +265,9 @@ g_sa            dd 3 dup(0)
 ; ==============================================================================
 .data?
 PUBLIC g_cmdBuf, g_statusBuf, g_filePath, g_argsBuf, g_tempBuf
-PUBLIC g_exePath, g_tempDirBuf, g_relayPath, g_relayArgs, g_relayReadBuf
+PUBLIC g_exePath, g_tempDirBuf, g_relayPath, g_relayErrPath, g_relayArgs, g_relayReadBuf
 
-g_cmdBuf        dw 520 dup(?)               ; Command line buffer (1040 bytes)
+g_cmdBuf        dw 32768 dup(?)             ; Full Win32 command-line capacity
 g_statusBuf     dw 520 dup(?)               ; Status message buffer (1040 bytes)
 g_filePath      dw 520 dup(?)               ; File path buffer (1040 bytes)
 g_argsBuf       dw 520 dup(?)               ; Arguments buffer (1040 bytes)
@@ -267,7 +275,8 @@ g_tempBuf       dw 1040 dup(?)              ; Temporary work buffer (2080 bytes)
 g_exePath       dw 260 dup(?)               ; Exe path buffer (UAC and context menu)
 g_tempDirBuf    dw 260 dup(?)               ; Relay temp directory buffer
 g_relayPath     dw 260 dup(?)               ; Relay temp file path
-g_relayArgs     dw 1040 dup(?)              ; Relay child argument string
+g_relayErrPath  dw 260 dup(?)               ; Separate stderr temp file path
+g_relayArgs     dw 65536 dup(?)              ; Cmdline plus two quoted relay paths
 g_relayReadBuf  db 4096 dup(?)              ; Relay read/copy buffer
 
 ; ==============================================================================
@@ -331,6 +340,7 @@ g_relayReadBuf  db 4096 dup(?)              ; Relay read/copy buffer
 ; ==============================================================================
 start proc
     LOCAL sei[60]:BYTE                      ; SHELLEXECUTEINFOW for UAC elevation
+    LOCAL consolePidBuf:DWORD               ; Scratch for GetConsoleProcessList
     ; pArgv/argc/argv1/sa promoted to globals (g_argv, g_argc, g_argv1, g_sa)
     ; so that cli.asm dispatch labels can reach them after extraction.
     ; msg (MSG struct) lives in mode_gui's own frame now that it's a proc.
@@ -338,13 +348,13 @@ start proc
     cld                                     ; Clear direction flag (forward string ops)
 
     ; ===== Attach to parent shell's console (best effort) =====
-    ; cmdt_x86.exe is built as /subsystem:windows (GUI), so cmd.exe does not
-    ; automatically wire up our STD_OUTPUT_HANDLE to its console — running
-    ; `cmdt -cli net session` from a non-admin shell with no redirect would
-    ; otherwise see GetStdHandle(STD_OUTPUT_HANDLE) return NULL and silently
-    ; drop the relay output. Redirected handles (`>file`, `|pipe`) ARE
-    ; inherited from cmd.exe, so leave those alone — AttachConsole would
-    ; overwrite them with CONOUT$.
+    ; cmdt_x86.exe is built as /subsystem:console. Redirection and pipes must
+    ; keep their inherited handles intact -- a real console handle is
+    ; different: this process may still not be attached to that console
+    ; (e.g. spawned via CreateProcessW without inheriting it), and then a
+    ; child console process can flash in its own window instead of writing
+    ; inline. Attach for CHAR/invalid stdout, but leave FILE/PIPE stdout
+    ; alone.
     invoke GetStdHandle, STD_OUTPUT_HANDLE
     test eax, eax
     jz early_do_attach
@@ -475,29 +485,25 @@ uac_already_admin:
     mov eax, [esi+4]                        ; argv[1] pointer
     mov g_argv1, eax
 
-    ; ===== CLI output relay, even when already elevated =====
-    ; RunAsTrustedInstaller always launches through CreateProcessWithTokenW,
-    ; which -- unlike plain CreateProcess -- does not reliably hand the
-    ; child usable inherited std handles (see process.asm's "Mode 1"
-    ; comment). That breaks `cmdt -cli <cmd> > out.txt` even when the caller
-    ; is already an elevated Administrator (issue #1: empty output in an
-    ; admin cmd.exe). Route -cli through the same temp-file relay used for
-    ; the non-admin case regardless of current elevation. NonAdminRelayLaunch
-    ; declines (returns 0) for -new, interactive shells, and the internal
-    ; -outfile relay child itself -- those fall through to the unchanged
-    ; dispatch below.
+    ; ===== Admin-side CLI output relay =====
+    ; Route -cli / --cli / cli through AdminRelayLaunch first so stdout/
+    ; stderr survive even though we're already elevated (RunAsTrustedInstaller's
+    ; CreateProcessWithTokenW does not reliably hand a usable inherited
+    ; console). AdminRelayLaunch declines (returns 0, falls through here) for
+    ; -new, an interactive-shell target, or the internal -outfile re-entry
+    ; token; those continue into the normal dispatch chain below.
     invoke wcscmp_ci, g_argv1, offset str_cliSwitch1
     test eax, eax
-    jnz admin_try_relay
+    jnz admin_cli_relay_try
     invoke wcscmp_ci, g_argv1, offset str_cliSwitch2
     test eax, eax
-    jnz admin_try_relay
+    jnz admin_cli_relay_try
     invoke wcscmp_ci, g_argv1, offset str_cliSwitch3
     test eax, eax
-    jz admin_relay_done
-admin_try_relay:
-    invoke NonAdminRelayLaunch, g_argv, g_argc, ebx
-admin_relay_done:
+    jz admin_cli_relay_done
+admin_cli_relay_try:
+    invoke AdminRelayLaunch, g_argv, g_argc, ebx
+admin_cli_relay_done:
 
     ; Check if argv[1] == "-cli" (standard switch)
     push offset str_cliSwitch1
@@ -575,6 +581,7 @@ mode_unshift_found:
     invoke ExitProcess, 0
 
 mode_historyclear_found:
+    ; Free argv and wipe the MRU registry key, if it exists
     invoke LocalFree, g_argv
     invoke RegDeleteTreeW, HKEY_CURRENT_USER, offset str_regKey
     invoke ExitProcess, 0
@@ -584,7 +591,32 @@ show_usage:
     invoke ShowUsageAndExit, g_argv
 
 mode_gui_free:
-    invoke LocalFree, g_argv                 ; Free argv and go to GUI mode
+    invoke LocalFree, g_argv                 ; Free argv array
+
+    ; No-args GUI launch: x86 is console subsystem, so the OS already
+    ; created a console window for this process before any of our code ran
+    ; -- that part can't be avoided. What we CAN do is hide it immediately,
+    ; in-process. No second process, no CreateProcessW round-trip -- just
+    ; two Win32 calls before falling straight into mode_gui, which is the
+    ; fastest we can get the window hidden.
+    ;
+    ; Safety check: only hide it if this console is EXCLUSIVELY ours (the
+    ; common Explorer double-click / shortcut / Run-dialog case, where the
+    ; OS spun up a fresh console solely for this process). If the user typed
+    ; "cmdt" with no args inside an EXISTING cmd.exe session, the console is
+    ; shared -- GetConsoleProcessList reports more than one attached
+    ; process -- and hiding it would hide the user's whole shell window. In
+    ; that case leave it alone; opening the GUI on top of an already-visible
+    ; console is normal, expected behavior, not a flash bug.
+    invoke GetConsoleProcessList, addr consolePidBuf, 1
+    cmp eax, 1
+    jne mode_gui                             ; shared (or unknown) console: leave it alone
+
+    invoke GetConsoleWindow
+    test eax, eax
+    jz mode_gui                              ; no console window to hide
+    invoke ShowWindow, eax, SW_HIDE
+
     invoke mode_gui                          ; never returns (ExitProcess inside)
     ret                                      ; unreachable but keeps unwind clean
 start endp

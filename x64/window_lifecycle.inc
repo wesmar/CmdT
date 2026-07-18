@@ -206,9 +206,15 @@ cmw_dpi_done:
     add rsp, 32
     mov [rsp+40+40], rax        ; hCursor
 
-    ; No background brush - allow Mica backdrop to be visible
-    xor rax, rax
-    mov [rsp+40+48], rax        ; hbrBackground = NULL
+    ; Give the light path a real erase brush. WM_ERASEBKGND paints the custom
+    ; dark palette itself, but in light mode it delegates to DefWindowProc.
+    ; A NULL class brush leaves the restored DWM surface uninitialised (black)
+    ; after minimize/restore, producing a mixed light-controls/dark-client UI.
+    mov ecx, WHITE_BRUSH
+    sub rsp, 32
+    call GetStockObject
+    add rsp, 32
+    mov [rsp+40+48], rax        ; hbrBackground = stock white brush
 
     ; Set class name
     lea rax, str_ClassName

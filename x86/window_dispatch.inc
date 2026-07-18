@@ -14,6 +14,11 @@ WndProc proc uses ebx esi edi hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD
     LOCAL sW:DWORD                          ; Scaled width, reused per control
     LOCAL sH:DWORD                          ; Scaled height, reused per control
 
+    ; Keep system-tray state and message semantics outside the GUI module.
+    invoke TrayHandleWindowMessage, hWnd, uMsg, wParam, lParam
+    test eax, eax
+    jnz wp_tray_handled
+
     ; Dispatch message to appropriate handler
     mov eax, uMsg
     cmp eax, WM_CREATE
@@ -49,6 +54,10 @@ WndProc proc uses ebx esi edi hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD
     cmp eax, WM_KEYDOWN
     je wp_keydown
     jmp wp_defproc                          ; Unhandled message
+
+wp_tray_handled:
+    xor eax, eax
+    ret
 
 wp_create:
     ; ===== WM_CREATE: Initialize window contents =====

@@ -125,13 +125,15 @@ wp_size_dpi_done:
     call MoveWindow
     add rsp, 48
 
-    ; Reposition status label
-    mov eax, 200
+    ; Reposition status label. Keep the same scaled10 gap after Browse and
+    ; before Run: X=scaled100, width=RunX-scaled110.
+    mov eax, 110
     imul eax, dword ptr [rbp-120]
     mov ecx, 96
     cdq
     idiv ecx
-    mov ebx, eax                 ; scaled 200 width
+    mov ebx, r14d                ; Run button X
+    sub ebx, eax                 ; status width = RunX - scaled110
     mov eax, 48
     imul eax, dword ptr [rbp-120]
     mov ecx, 96
@@ -152,7 +154,7 @@ wp_size_dpi_done:
     sub rsp, 48
     mov dword ptr [rsp+40], 1   ; bRepaint
     mov dword ptr [rsp+32], eax ; Height
-    mov r9d, ebx                 ; Width (fixed to not overlap Run)
+    mov r9d, ebx                 ; Width (equal gap on both sides)
     mov r8d, r13d                 ; Y (aligned with buttons)
     mov edx, r14d                 ; X (after Browse button)
     mov rcx, g_hwndStatus
@@ -444,6 +446,11 @@ wp_ctlcolor_static:
 
 wp_destroy:
     ; Window is being destroyed
+    mov rcx, [rbp-72]
+    sub rsp, 32
+    call TrayShutdown
+    add rsp, 32
+
     mov rcx, g_brushBg
     test rcx, rcx
     jz @F

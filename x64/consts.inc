@@ -65,6 +65,7 @@ STARTUPINFOW_SIZE           EQU 104       ; Size of STARTUPINFOW structure
 STARTUPINFOEX_SIZE          EQU 112       ; STARTUPINFOW (104) + lpAttributeList (8)
 STARTF_USESHOWWINDOW        EQU 00000001h ; Use wShowWindow field
 SW_HIDE                     EQU 0         ; Hide window
+SW_RESTORE                  EQU 9         ; Restore a minimized window
 
 ; PROC_THREAD_ATTRIBUTE list constants. Used with STARTUPINFOEX to force
 ; specific handles to be inherited by a child process even when the
@@ -110,6 +111,7 @@ BS_DEFPUSHBUTTON            EQU 00000001h ; Default push button
 ; STATIC CONTROL STYLES
 ; ==============================================================================
 SS_LEFT                     EQU 00000000h ; Left-aligned text
+SS_CENTERIMAGE              EQU 00000200h ; Vertically center a single text line
 
 ; ==============================================================================
 ; COMBINED CONTROL STYLES (for convenience)
@@ -119,7 +121,7 @@ STY_EDIT                    EQU 50810080h ; Edit control style
 STY_COMBO                   EQU 50010042h ; ComboBox style
 STY_BUTTON                  EQU 50010000h ; Button style
 STY_BUTTON_DEF              EQU 50010001h ; Default button style
-STY_STATIC                  EQU 50000000h ; Static text style
+STY_STATIC                  EQU 50000200h ; Child + visible + SS_CENTERIMAGE
 STY_MAINWIN                 EQU 10CA0000h ; Main window style
 
 ; ==============================================================================
@@ -153,6 +155,11 @@ WM_SETTINGCHANGE            EQU 001Ah    ; System-wide settings change
 WM_CHAR                     EQU 0102h    ; Character input
 WM_COMMAND                  EQU 0111h    ; Command from menu or control
 WM_CLOSE                    EQU 0010h    ; Window close request
+WM_LBUTTONDBLCLK            EQU 0203h    ; Left-button double click
+WM_RBUTTONUP                EQU 0205h    ; Right-button released
+WM_TRAY                     EQU 8001h    ; Private tray callback message
+SIZE_MINIMIZED              EQU 1        ; WM_SIZE wParam when minimized
+VK_SHIFT                    EQU 10h      ; Shift virtual-key code
 WM_KEYDOWN                  EQU 0100h    ; Key pressed
 WM_GETTEXT                  EQU 000Dh    ; Get window text
 WM_GETTEXTLENGTH            EQU 000Eh    ; Get text length

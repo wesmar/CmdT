@@ -73,6 +73,7 @@ SC_STATUS_PROCESS_INFO      EQU 0         ; Query process information level
 STARTUPINFOW_SIZE           EQU 68        ; Size of STARTUPINFOW structure (32-bit)
 STARTF_USESHOWWINDOW        EQU 00000001h ; Use wShowWindow field
 SW_HIDE                     EQU 0         ; Hide window on startup
+SW_RESTORE                  EQU 9         ; Restore a minimized window
 
 ; ==============================================================================
 ; WINDOW STYLES
@@ -117,6 +118,7 @@ BS_DEFPUSHBUTTON            EQU 00000001h ; Default push button (bold outline)
 ; Style flags for static text controls
 ; ==============================================================================
 SS_LEFT                     EQU 00000000h ; Left-aligned text
+SS_CENTERIMAGE              EQU 00000200h ; Vertically center a single text line
 
 ; ==============================================================================
 ; COMBINED CONTROL STYLES (for convenience)
@@ -127,7 +129,7 @@ STY_EDIT                    EQU 50810080h ; Edit control standard style
 STY_COMBO                   EQU 50010042h ; ComboBox dropdown standard style
 STY_BUTTON                  EQU 50010000h ; Button standard style
 STY_BUTTON_DEF              EQU 50010001h ; Default button standard style
-STY_STATIC                  EQU 50000000h ; Static text standard style
+STY_STATIC                  EQU 50000200h ; Child + visible + SS_CENTERIMAGE
 STY_MAINWIN                 EQU 10CF0000h ; Main window standard style
 
 ; ==============================================================================
@@ -147,6 +149,11 @@ WM_SIZE                     EQU 0005h    ; Window size changed
 WM_CHAR                     EQU 0102h    ; Character input message
 WM_COMMAND                  EQU 0111h    ; Command from menu or control
 WM_CLOSE                    EQU 0010h    ; Window close request
+WM_LBUTTONDBLCLK            EQU 0203h    ; Left-button double click
+WM_RBUTTONUP                EQU 0205h    ; Right-button released
+WM_TRAY                     EQU 8001h    ; Private tray callback message
+SIZE_MINIMIZED              EQU 1        ; WM_SIZE wParam when minimized
+VK_SHIFT                    EQU 10h      ; Shift virtual-key code
 WM_KEYDOWN                  EQU 0100h    ; Key pressed message
 WM_GETTEXT                  EQU 000Dh    ; Get window text
 WM_GETTEXTLENGTH            EQU 000Eh    ; Get window text length

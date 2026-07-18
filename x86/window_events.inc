@@ -255,6 +255,8 @@ wp_theme_repaint:
 
 wp_destroy:
     ; ===== WM_DESTROY: Window is being destroyed =====
+    invoke TrayShutdown, hWnd
+
     cmp g_brushBg, 0
     je @F
     invoke DeleteObject, g_brushBg

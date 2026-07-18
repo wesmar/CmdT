@@ -54,6 +54,12 @@ ApplyWindowTheme proc frame
     test eax, eax
     jnz awt_close
 
+    ; A successful query is authoritative in both directions. Reset the
+    ; candidate to light before testing the registry value; otherwise a
+    ; previous dark state remains latched when AppsUseLightTheme is nonzero
+    ; (observed after minimize/restore on x64).
+    mov dword ptr [rsp+56], 0
+
     ; If AppsUseLightTheme == 0, enable dark mode
     mov eax, dword ptr [rsp+40]
     test eax, eax

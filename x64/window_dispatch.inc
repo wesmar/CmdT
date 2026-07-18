@@ -30,8 +30,17 @@ WndProc proc frame
     mov [rbp-88], r8            ; wParam
     mov [rbp-96], r9            ; lParam
 
-    ; Dispatch message to appropriate handler
-    mov eax, edx
+    ; Tray behavior is isolated in tray.asm. It consumes Shift+minimize,
+    ; tray callbacks and Explorer's registered TaskbarCreated notification.
+    sub rsp, 32
+    call TrayHandleWindowMessage
+    add rsp, 32
+    test eax, eax
+    jnz wp_handled
+
+    ; Dispatch from the saved copy: the tray delegate above is a normal call
+    ; and may legally clobber volatile EDX under the Windows x64 ABI.
+    mov eax, dword ptr [rbp-80]
     cmp eax, WM_CREATE
     je wp_create
     cmp eax, WM_COMMAND
@@ -66,9 +75,13 @@ WndProc proc frame
     je wp_keydown
     jmp wp_defproc
 
+wp_handled:
+    xor eax, eax
+    jmp wp_done
+
 wp_create:
     ; Extract hInstance from CREATESTRUCT
-    mov rax, r9                 ; lParam = CREATESTRUCT pointer
+    mov rax, [rbp-96]           ; saved lParam = CREATESTRUCT pointer
     mov rax, [rax+8]            ; lpCreateParams->hInstance
     mov r15, rax                ; Save hInstance
 

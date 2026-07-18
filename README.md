@@ -6,7 +6,7 @@
 
 CMDT starts a process with a primary token duplicated from the running **Windows Modules Installer (TrustedInstaller)** service. That token normally identifies its user as `NT AUTHORITY\SYSTEM` and carries the enabled `NT SERVICE\TrustedInstaller` service SID used by ACLs protecting Windows components. CMDT also attempts to enable its table of 34 Windows token privileges before process creation; Windows still remains the final authority on privileges present in the source token and on every object-specific ACL check.
 
-The current release binaries are **36.50 KiB (37,376 bytes)** on x64 and **28.50 KiB (29,184 bytes)** on x86, with enforced build limits of under 40 KiB and under 30 KiB respectively. No C runtime, framework, or third-party runtime is required.
+The current release binaries are **38.00 KiB (38,912 bytes)** on x64 and **29.50 KiB (30,208 bytes)** on x86, with enforced build limits of under 40 KiB and under 30 KiB respectively. No C runtime, framework, or third-party runtime is required.
 
 ---
 
@@ -39,8 +39,8 @@ Both architectures — **x86 (IA-32)** and **x64 (AMD64)** — are built from se
 
 | Binary | Current release size | Enforced limit | Architecture |
 |---|---:|---:|---|
-| `cmdt_x64.exe` | **36.50 KiB (37,376 bytes)** | **<40 KiB** | x64 / AMD64 |
-| `cmdt_x86.exe` | **28.50 KiB (29,184 bytes)** | **<30 KiB** | x86 / IA-32 |
+| `cmdt_x64.exe` | **38.00 KiB (38,912 bytes)** | **<40 KiB** | x64 / AMD64 |
+| `cmdt_x86.exe` | **29.50 KiB (30,208 bytes)** | **<30 KiB** | x86 / IA-32 |
 
 For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in well under 40 KB on x64 and 30 KB on x86. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
 
@@ -49,6 +49,7 @@ For comparison, equivalent tools written in C++ or C# typically weigh in at 50�
 ## Features
 
 - **Dual-mode operation** — GUI and CLI from a single binary, selected at runtime
+- **Shift+Minimize to tray** — minimizing normally keeps CMDT on the taskbar; hold **Shift** while clicking Minimize to hide it in the notification area. Double-click the tray icon or choose **Restore** from its context menu to bring the window back; **Exit** closes CMDT directly from the tray
 - **UAC self-elevation** — automatically prompts for admin rights via `ShellExecuteEx("runas")` if not already elevated, forwarding all original command-line arguments to the elevated instance
 - **Explorer context menu integration** — `cmdt -install` registers right-click entries for directories, executables, and shortcuts; `cmdt -uninstall` removes them (see [Context Menu Integration](#context-menu-integration))
 - **Sticky Keys IFEO hook** — `cmdt -shift` installs an Image File Execution Options debugger redirect for `sethc.exe`, so pressing Shift 5 times at the login screen opens a TrustedInstaller command prompt instead of Sticky Keys; `cmdt -unshift` reverts to default behavior (see [Sticky Keys IFEO Hook](#sticky-keys-ifeo-hook))
@@ -62,7 +63,7 @@ For comparison, equivalent tools written in C++ or C# typically weigh in at 50�
 - **Drag-and-drop** with UIPI bypass — accepts drops from non-elevated Explorer windows
 - **DPI-aware** — PerMonitorV2 via application manifest, sharp rendering on mixed-DPI setups; the DPI query APIs themselves are resolved dynamically at runtime (not statically imported) so the binary still loads and runs on Windows 7/8/8.1, just without per-monitor scaling (see [Manifest and DPI Awareness](#manifest-and-dpi-awareness))
 - **System-aware dark mode** — reads `AppsUseLightTheme` from the registry and applies it to the title bar, Mica backdrop, ComboBox, buttons, status label, and native popup-menu theme. Updates on `WM_SETTINGCHANGE`/`WM_THEMECHANGED` without restarting. The classic top-level `HMENU` strip remains rendered by USER32; CMDT deliberately does not force the experimental owner-draw path that proved re-entrant on x64 (see [Dark Mode and Mica Backdrop](#dark-mode-and-mica-backdrop))
-- **Mica backdrop** — `DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_MAINWINDOW` on Windows 11; the window background is transparent to the Mica layer (no background brush)
+- **Mica backdrop** — `DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_MAINWINDOW` on Windows 11, combined with explicit light/dark client painting so minimize/restore never exposes an uninitialized DWM surface
 - **Modern visual styles** — Common Controls v6 through SxS manifest dependency
 - **Resilient service startup** — retry loop with up to 2-second backoff when TrustedInstaller service is cold
 - **I/O handle inheritance** — CLI mode preserves stdin/stdout/stderr for piping and redirection
@@ -112,8 +113,11 @@ The window provides:
 - **Status bar** — displays "Ready", "Launching...", "Process OK", or "Failed"
 - **Drag-and-drop** — drop any `.exe` or `.lnk` file onto the window; it resolves the target and runs it immediately
 - **Keyboard** — `Enter` runs the current command, `Escape` closes the window
+- **Minimize** — click Minimize normally to keep CMDT on the taskbar, or hold **Shift** while clicking it to hide CMDT in the system tray. Double-click the tray icon to restore the window; right-click it for **Restore** and **Exit**
 
 The GUI dynamically relays out on resize. Controls stretch and reposition to fill the available client area.
+
+Tray handling is isolated in `tray.asm` for each architecture. The module owns the `NOTIFYICONDATAW` state, Shift-key detection, restore/exit menu, and icon cleanup. It also registers the `TaskbarCreated` message and allows that specific message through UIPI, so an elevated CMDT can republish its icon if Explorer restarts while the window is hidden.
 
 ### CLI Mode
 
@@ -462,7 +466,7 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize
 
 This drives three cooperating layers. Window and control attributes are reapplied on `WM_SETTINGCHANGE`/`WM_THEMECHANGED`, so a live theme toggle in Windows Settings does not require restarting CMDT:
 
-**1. DWM chrome.** `DwmSetWindowAttribute` is called with `DWMWA_USE_IMMERSIVE_DARK_MODE` (20, falling back to attribute 19 on Windows 10 builds before 20H1) for the title bar, and `DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_MAINWINDOW` (2) for the Mica material backdrop on Windows 11. The window class registers with no background brush (`hbrBackground = NULL`), leaving the client area transparent to the Mica layer.
+**1. DWM chrome.** `DwmSetWindowAttribute` is called with `DWMWA_USE_IMMERSIVE_DARK_MODE` (20, falling back to attribute 19 on Windows 10 builds before 20H1) for the title bar, and `DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_MAINWINDOW` (2) for the Mica material backdrop on Windows 11. The class uses a stock white background brush for the delegated light-mode erase path, while the dark-mode `WM_ERASEBKGND` handler paints the custom background explicitly. This prevents a restored light window from exposing a black, uninitialized DWM surface.
 
 **2. Client controls.** The ComboBox, Browse/Run buttons, and status label are switched to comctl32's dark visual style via `SetWindowTheme(hwnd, "DarkModeExplorer", NULL)`, and `WM_CTLCOLOREDIT`/`WM_CTLCOLORBTN`/`WM_CTLCOLORSTATIC`/`WM_CTLCOLORLISTBOX` handlers in `window_dispatch.inc` paint the exact background/text colors (four cached `CreateSolidBrush` handles — background, surface, hover, input — built once in `EnsureThemeBrushes` and reused for the process lifetime) so the result matches Notepad's palette instead of a jarring light-control-on-dark-window mismatch.
 
@@ -537,6 +541,7 @@ cmdt/
 │   ├── process.asm               # CreateProcessWithTokenW wrapper
 │   ├── install.asm               # Context menu registration and Sticky Keys IFEO hook
 │   ├── window.asm                # GUI entry: WNDCLASSW registration, `include`s the six window_*.inc below
+│   ├── tray.asm                  # Shift+Minimize tray icon, restore/exit menu, Explorer-restart recovery
 │   ├── window_lifecycle.inc      # InitDpiApis, window/control creation, DPI scaling math
 │   ├── window_theme.inc          # Dark mode: DWM chrome, controls, native UxTheme menu preference
 │   ├── window_commands.inc       # RunCommand — reads the ComboBox, dispatches to RunAsTrustedInstaller

@@ -71,7 +71,6 @@ GetStdHandle            PROTO :DWORD
 GetFileType             PROTO :DWORD
 WriteConsoleW           PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 WriteFile               PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
-WriteConsoleInputW      PROTO :DWORD,:DWORD,:DWORD,:DWORD
 CreateFileW             PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 ReadFile                PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 DeleteFileW             PROTO :DWORD
@@ -303,6 +302,21 @@ g_relayReadBuf  db 4096 dup(?)              ; Relay read/copy buffer
 ; ==============================================================================
 
 
+; Hide only a process-private console. Consoles shared with cmd.exe or another
+; parent are intentionally left visible. Called before UAC and at GUI dispatch.
+HidePrivateConsoleForGui proc
+    LOCAL consolePid:DWORD
+    invoke GetConsoleProcessList, addr consolePid, 1
+    cmp eax, 1
+    jne hpcfg_done
+    invoke GetConsoleWindow
+    test eax, eax
+    jz hpcfg_done
+    invoke ShowWindow, eax, SW_HIDE
+hpcfg_done:
+    ret
+HidePrivateConsoleForGui endp
+
 ; ==============================================================================
 ; start - Main Entry Point
 ;
@@ -340,7 +354,6 @@ g_relayReadBuf  db 4096 dup(?)              ; Relay read/copy buffer
 ; ==============================================================================
 start proc
     LOCAL sei[60]:BYTE                      ; SHELLEXECUTEINFOW for UAC elevation
-    LOCAL consolePidBuf:DWORD               ; Scratch for GetConsoleProcessList
     ; pArgv/argc/argv1/sa promoted to globals (g_argv, g_argc, g_argv1, g_sa)
     ; so that cli.asm dispatch labels can reach them after extraction.
     ; msg (MSG struct) lives in mode_gui's own frame now that it's a proc.
@@ -378,6 +391,12 @@ early_attach_done:
     mov g_argv, eax
     test eax, eax
     jz early_after_help
+
+    ; Hide the non-elevated parent's private GUI console before UAC relaunch.
+    cmp g_argc, 1
+    jne early_not_gui
+    invoke HidePrivateConsoleForGui
+early_not_gui:
 
     cmp g_argc,2
     jl early_after_help
@@ -593,29 +612,8 @@ show_usage:
 mode_gui_free:
     invoke LocalFree, g_argv                 ; Free argv array
 
-    ; No-args GUI launch: x86 is console subsystem, so the OS already
-    ; created a console window for this process before any of our code ran
-    ; -- that part can't be avoided. What we CAN do is hide it immediately,
-    ; in-process. No second process, no CreateProcessW round-trip -- just
-    ; two Win32 calls before falling straight into mode_gui, which is the
-    ; fastest we can get the window hidden.
-    ;
-    ; Safety check: only hide it if this console is EXCLUSIVELY ours (the
-    ; common Explorer double-click / shortcut / Run-dialog case, where the
-    ; OS spun up a fresh console solely for this process). If the user typed
-    ; "cmdt" with no args inside an EXISTING cmd.exe session, the console is
-    ; shared -- GetConsoleProcessList reports more than one attached
-    ; process -- and hiding it would hide the user's whole shell window. In
-    ; that case leave it alone; opening the GUI on top of an already-visible
-    ; console is normal, expected behavior, not a flash bug.
-    invoke GetConsoleProcessList, addr consolePidBuf, 1
-    cmp eax, 1
-    jne mode_gui                             ; shared (or unknown) console: leave it alone
-
-    invoke GetConsoleWindow
-    test eax, eax
-    jz mode_gui                              ; no console window to hide
-    invoke ShowWindow, eax, SW_HIDE
+    ; Idempotent fallback for alternate internal paths that reach GUI mode.
+    invoke HidePrivateConsoleForGui
 
     invoke mode_gui                          ; never returns (ExitProcess inside)
     ret                                      ; unreachable but keeps unwind clean

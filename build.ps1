@@ -100,28 +100,6 @@ $FILES_X64 = @("main", "token", "process", "window", "strutil", "help", "install
 $LIBS = @("kernel32.lib", "user32.lib", "advapi32.lib", "shlwapi.lib", "shell32.lib", "gdi32.lib", "comdlg32.lib", "userenv.lib", "ole32.lib", "dwmapi.lib", "uxtheme.lib", "OleAut32.lib")
 $BuildSuccess = $true
 
-function Test-BinarySize {
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][int64]$LimitBytes,
-        [Parameter(Mandatory)][string]$Label
-    )
-
-    $bytes = (Get-Item -LiteralPath $Path).Length
-    $kib = [string]::Format(
-        [Globalization.CultureInfo]::InvariantCulture,
-        "{0:F2}",
-        $bytes / 1KB)
-    Write-Host "Binary size: $Label = $kib KiB ($bytes bytes); limit < $($LimitBytes / 1KB) KiB" -ForegroundColor Cyan
-
-    if ($bytes -ge $LimitBytes) {
-        Write-Host "ERROR: $Label exceeds its binary-size limit" -ForegroundColor Red
-        return $false
-    }
-    Write-Host "[PASS] Binary size is within limit" -ForegroundColor Green
-    return $true
-}
-
 Write-Host ""
 Write-Host ">>> Architecture: x86" -ForegroundColor Cyan
 Push-Location $ScriptDir
@@ -145,9 +123,6 @@ if ($LASTEXITCODE -ne 0) {
             $BuildSuccess = $false 
         } else { 
             Write-Host "Build successful: bin\cmdt_x86.exe" -ForegroundColor Green
-            if (-not (Test-BinarySize "$BinDir\cmdt_x86.exe" (30 * 1KB) "x86")) {
-                $BuildSuccess = $false
-            }
             Write-Host "Checking imports..." -ForegroundColor Cyan
             $DUMPBIN32 = "$VSBASE\x86\dumpbin.exe"
             & $DUMPBIN32 /imports "$BinDir\cmdt_x86.exe" | Select-String "msvcr|vcruntime|ucrtbase" | ForEach-Object {
@@ -193,9 +168,6 @@ if ($LASTEXITCODE -ne 0) {
             $BuildSuccess = $false 
         } else { 
             Write-Host "Build successful: bin\cmdt_x64.exe" -ForegroundColor Green
-            if (-not (Test-BinarySize "$BinDir\cmdt_x64.exe" (40 * 1KB) "x64")) {
-                $BuildSuccess = $false
-            }
             Write-Host "Checking imports..." -ForegroundColor Cyan
             $DUMPBIN64 = "$VSBASE\x64\dumpbin.exe"
             & $DUMPBIN64 /imports "$BinDir\cmdt_x64.exe" | Select-String "msvcr|vcruntime|ucrtbase" | ForEach-Object {

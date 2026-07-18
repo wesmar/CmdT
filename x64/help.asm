@@ -15,8 +15,6 @@
 ;   ShowUsage        - Free argv (optional) and write the usage banner. Picks
 ;                      WriteConsoleW for console handles and WriteFile for
 ;                      redirected handles. Never returns.
-;   NudgeConsolePrompt - Best-effort prompt redraw helper for GUI-subsystem
-;                        CLI paths attached to a parent cmd.exe console.
 ; ==============================================================================
 
 option casemap:none
@@ -28,7 +26,6 @@ EXTRN AttachConsole:PROC
 EXTRN GetStdHandle:PROC
 EXTRN GetFileType:PROC
 EXTRN WriteConsoleW:PROC
-EXTRN WriteConsoleInputW:PROC
 EXTRN WriteFile:PROC
 EXTRN LocalFree:PROC
 EXTRN ExitProcess:PROC
@@ -37,7 +34,6 @@ EXTRN ExitProcess:PROC
 EXTRN wcscmp_ci:PROC
 EXTRN wcslen_p:PROC
 
-PUBLIC NudgeConsolePrompt
 
 ; ==============================================================================
 ; CONSTANT STRING DATA
@@ -76,10 +72,10 @@ str_usage       dw 13,10
                 dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
                 dw 'H','o','o','k',' ','s','e','t','h','c','.','e','x','e',13,10
                 dw ' ',' ','-','u','n','s','h','i','f','t'
-                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
+                dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
                 dw 'U','n','h','o','o','k',' ','s','e','t','h','c','.','e','x','e',13,10
                 dw ' ',' ','-','h','i','s','t','o','r','y','-','c','l','e','a','r'
-                dw ' ',' ',' '
+                dw ' ',' ',' ',' ',' ',' '
                 dw 'C','l','e','a','r',' ','s','a','v','e','d',' ','c','o','m','m','a','n','d',' ','h','i','s','t','o','r','y',13,10
                 dw ' ',' ','-','h','e','l','p',',',' ','-','h',',',' ','-','-','h','e','l','p',',',' ','-','?',',',' ','/','?'
                 dw ' ',' '
@@ -199,11 +195,8 @@ HelpCheckAndExit endp
 ;
 ; Purpose: Selects the right output API based on the stdout handle type:
 ;          WriteConsoleW for a console (UTF-16 native), WriteFile for files
-;          or pipes (raw UTF-16 LE bytes). After printing it nudges cmd.exe
-;          into redrawing its prompt by posting a fake VK_RETURN to stdin
-;          when stdout is a real console — without that, cmd shows the
-;          prompt before our output and the cursor sits idle until the user
-;          presses a key.
+;          or pipes (raw UTF-16 LE bytes). As a console-subsystem process,
+;          CMDT is waited on by cmd.exe; no synthetic input is required.
 ;
 ; Parameters:
 ;   RCX = argv buffer pointer to free, or NULL.
@@ -265,7 +258,7 @@ su_no_free:
     mov rcx, rbx
     call WriteConsoleW
     add rsp, 48
-    jmp su_post
+    jmp su_exit
 
 su_writefile:
     sub rsp, 32+8
@@ -280,109 +273,11 @@ su_writefile:
     add rsp, 32+8
     jmp su_exit
 
-su_post:
-    ; Post a fake Enter into the attached console so cmd.exe redraws its
-    ; prompt after we exit. Without this, the prompt is printed before our
-    ; output appears and the cursor sits there idle until a key is pressed.
-    mov ecx, STD_INPUT_HANDLE
-    sub rsp, 32
-    call GetStdHandle
-    add rsp, 32
-    test rax, rax
-    jz su_exit
-    mov rdi, rax
-
-    ; INPUT_RECORD (20 bytes) at [rsp+0..rsp+19] inside our 96-byte frame.
-    mov word ptr  [rsp+0],  1   ; EventType = KEY_EVENT
-    mov word ptr  [rsp+2],  0   ; padding
-    mov dword ptr [rsp+4],  1   ; bKeyDown = TRUE
-    mov word ptr  [rsp+8],  1   ; wRepeatCount = 1
-    mov word ptr  [rsp+10], 0Dh ; wVirtualKeyCode = VK_RETURN
-    mov word ptr  [rsp+12], 1Ch ; wVirtualScanCode
-    mov word ptr  [rsp+14], 0Dh ; uChar.UnicodeChar = '\r'
-    mov dword ptr [rsp+16], 0   ; dwControlKeyState
-
-    sub rsp, 32
-    lea r9, [rsp+32+72]         ; lpNumberOfEventsWritten (scratch slot)
-    mov r8d, 1                  ; nLength = 1
-    lea rdx, [rsp+32]           ; lpBuffer = INPUT_RECORD
-    mov rcx, rdi
-    call WriteConsoleInputW
-    add rsp, 32
-
 su_exit:
     mov ecx, 1                  ; Exit with status 1 (usage-shown convention)
     sub rsp, 32
     call ExitProcess
     add rsp, 32
 ShowUsage endp
-
-; ==============================================================================
-; NudgeConsolePrompt - Ask cmd.exe to redraw its prompt after CLI output
-;
-; Purpose: GUI-subsystem programs launched from cmd.exe are not waited on like
-;          console programs. When they later attach to/copy output into the
-;          console, cmd.exe may have already printed its prompt in the wrong
-;          place. Posting a single Enter to the console input queue makes cmd
-;          redraw after our output. No-op for redirected stdout.
-;
-; Parameters: None
-; Returns: None
-; ==============================================================================
-NudgeConsolePrompt proc frame
-    push rdi
-    .pushreg rdi
-    sub rsp, 64
-    .allocstack 64
-    .endprolog
-
-    mov ecx, STD_OUTPUT_HANDLE
-    sub rsp, 32
-    call GetStdHandle
-    add rsp, 32
-    test rax, rax
-    jz ncp_done
-    cmp rax, -1
-    je ncp_done
-
-    mov rcx, rax
-    sub rsp, 32
-    call GetFileType
-    add rsp, 32
-    cmp eax, 2                  ; FILE_TYPE_CHAR
-    jne ncp_done
-
-    mov ecx, STD_INPUT_HANDLE
-    sub rsp, 32
-    call GetStdHandle
-    add rsp, 32
-    test rax, rax
-    jz ncp_done
-    cmp rax, -1
-    je ncp_done
-    mov rdi, rax
-
-    mov word ptr  [rsp+0],  1
-    mov word ptr  [rsp+2],  0
-    mov dword ptr [rsp+4],  1
-    mov word ptr  [rsp+8],  1
-    mov word ptr  [rsp+10], 0Dh
-    mov word ptr  [rsp+12], 1Ch
-    mov word ptr  [rsp+14], 0Dh
-    mov dword ptr [rsp+16], 0
-
-    sub rsp, 32
-    lea r9, [rsp+32+24]
-    mov r8d, 1
-    lea rdx, [rsp+32]
-    mov rcx, rdi
-    call WriteConsoleInputW
-    add rsp, 32
-
-ncp_done:
-    add rsp, 64
-    pop rdi
-    ret
-NudgeConsolePrompt endp
 
 end

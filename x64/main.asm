@@ -282,6 +282,29 @@ g_relayReadBuf  db 4096 dup(?)
 ; ==============================================================================
 .code
 
+; Hide a console created solely for a no-argument GUI process. A console
+; shared with cmd.exe or another parent is never touched. Safe to call both
+; before UAC relaunch and again at the final GUI dispatch.
+HidePrivateConsoleForGui proc frame
+    sub rsp, 40
+    .allocstack 40
+    .endprolog
+    lea rcx, [rsp+32]
+    mov edx, 1
+    call GetConsoleProcessList
+    cmp eax, 1
+    jne hpcfg_done
+    call GetConsoleWindow
+    test rax, rax
+    jz hpcfg_done
+    mov rcx, rax
+    mov edx, SW_HIDE
+    call ShowWindow
+hpcfg_done:
+    add rsp, 40
+    ret
+HidePrivateConsoleForGui endp
+
 
 ; ==============================================================================
 ; mainCRTStartup - Application Entry Point
@@ -399,6 +422,14 @@ early_attach_done:
     mov r13, rax
     test rax, rax
     jz early_help_skip
+
+    ; Hide the non-elevated parent's private GUI console before UAC relaunch.
+    cmp dword ptr [rbp-64], 1
+    jne early_not_gui
+    sub rsp, 32
+    call HidePrivateConsoleForGui
+    add rsp, 32
+early_not_gui:
 
     ; Delegate help-switch detection to help.asm. If a help variant is
     ; present, HelpCheckAndExit frees argv via LocalFree and never returns
@@ -741,38 +772,9 @@ mode_gui_free:
     call LocalFree
     add rsp, 32
 
-    ; No-args GUI launch: x64 is console subsystem, so the OS already
-    ; created a console window for this process before any of our code ran
-    ; -- that part can't be avoided. What we CAN do is hide it immediately,
-    ; in-process. No second process, no CreateProcessW round-trip -- just
-    ; two Win32 calls before falling straight into mode_gui, which is the
-    ; fastest we can get the window hidden.
-    ;
-    ; Safety check: only hide it if this console is EXCLUSIVELY ours (the
-    ; common Explorer double-click / shortcut / Run-dialog case, where the
-    ; OS spun up a fresh console solely for this process). If the user typed
-    ; "cmdt" with no args inside an EXISTING cmd.exe session, the console is
-    ; shared -- GetConsoleProcessList reports more than one attached
-    ; process -- and hiding it would hide the user's whole shell window. In
-    ; that case leave it alone; opening the GUI on top of an already-visible
-    ; console is normal, expected behavior, not a flash bug.
-    lea rcx, [rbp-72]
-    mov edx, 1
+    ; Idempotent fallback for alternate internal paths that reach GUI mode.
     sub rsp, 32
-    call GetConsoleProcessList
-    add rsp, 32
-    cmp eax, 1
-    jne mode_gui                 ; shared (or unknown) console: leave it alone
-
-    sub rsp, 32
-    call GetConsoleWindow
-    add rsp, 32
-    test rax, rax
-    jz mode_gui                  ; no console window to hide
-    mov rcx, rax
-    mov edx, SW_HIDE
-    sub rsp, 32
-    call ShowWindow
+    call HidePrivateConsoleForGui
     add rsp, 32
     jmp mode_gui                ; transfer into the GUI proc (which never
                                 ; returns) — control never falls through

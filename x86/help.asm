@@ -28,7 +28,6 @@ GetStdHandle        PROTO :DWORD
 GetFileType         PROTO :DWORD
 WriteConsoleW       PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 WriteFile           PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
-WriteConsoleInputW  PROTO :DWORD,:DWORD,:DWORD,:DWORD
 LocalFree           PROTO :DWORD
 ExitProcess         PROTO :DWORD
 
@@ -75,7 +74,7 @@ str_usage       dw 13,10
                 dw ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
                 dw 'U','n','h','o','o','k',' ','s','e','t','h','c','.','e','x','e',13,10
                 dw ' ',' ','-','h','i','s','t','o','r','y','-','c','l','e','a','r'
-                dw ' ',' ',' '
+                dw ' ',' ',' ',' ',' ',' '
                 dw 'C','l','e','a','r',' ','s','a','v','e','d',' ','c','o','m','m','a','n','d',' ','h','i','s','t','o','r','y',13,10
                 dw ' ',' ','-','h','e','l','p',',',' ','-','h',',',' ','-','-','h','e','l','p',',',' ','-','?',',',' ','/','?'
                 dw ' ',' '
@@ -136,7 +135,6 @@ IsHelpSwitch endp
 ShowUsageAndExit proc uses ebx edi pFreeArgv:DWORD
     LOCAL written:DWORD
     LOCAL usageChars:DWORD
-    LOCAL inputRec[20]:BYTE                 ; INPUT_RECORD for fake VK_RETURN
 
     mov eax, pFreeArgv
     test eax, eax
@@ -168,28 +166,6 @@ sue_have_stdout:
     jne sue_file
 
     invoke WriteConsoleW, ebx, offset str_usage, usageChars, addr written, 0
-
-    ; Post a fake Enter into the attached console so cmd.exe redraws its
-    ; prompt after we exit. Without this, the prompt is printed before our
-    ; output appears and the cursor sits idle until a key is pressed.
-    invoke GetStdHandle, STD_INPUT_HANDLE
-    test eax, eax
-    jz sue_exit
-    cmp eax, -1
-    je sue_exit
-    mov edi, eax
-
-    ; Build INPUT_RECORD: KEY_EVENT, bKeyDown=TRUE, VK_RETURN, ASCII '\r'.
-    lea ebx, inputRec
-    mov word ptr [ebx+0],  1                ; EventType = KEY_EVENT
-    mov word ptr [ebx+2],  0                ; padding
-    mov dword ptr [ebx+4], 1                ; bKeyDown = TRUE
-    mov word ptr [ebx+8],  1                ; wRepeatCount = 1
-    mov word ptr [ebx+10], 0Dh              ; wVirtualKeyCode = VK_RETURN
-    mov word ptr [ebx+12], 1Ch              ; wVirtualScanCode
-    mov word ptr [ebx+14], 0Dh              ; uChar.UnicodeChar = '\r'
-    mov dword ptr [ebx+16], 0               ; dwControlKeyState
-    invoke WriteConsoleInputW, edi, ebx, 1, addr written
     jmp sue_exit
 
 sue_file:
@@ -200,58 +176,5 @@ sue_file:
 sue_exit:
     invoke ExitProcess, 1
 ShowUsageAndExit endp
-
-; ==============================================================================
-; NudgeConsolePrompt - Ask cmd.exe to redraw its prompt after CLI output
-;
-; Purpose: GUI-subsystem programs (like cmdt_x86.exe) launched from cmd.exe
-;          are not waited on as console programs would be. By the time we
-;          finish streaming relay output to STDOUT, cmd.exe has already
-;          printed its next prompt one or more lines too high — leaving the
-;          cursor parked over our last line of output with no visible
-;          prompt. Posting a single VK_RETURN into the console input queue
-;          makes cmd redraw a fresh prompt below our output.
-;
-;          No-op when STDOUT is not a console (redirected file or pipe) —
-;          there is nothing to nudge.
-;
-; Parameters: None
-; Returns: None
-; ==============================================================================
-NudgeConsolePrompt proc uses ebx edi
-    LOCAL ncpRec[20]:BYTE
-    LOCAL ncpWritten:DWORD
-
-    invoke GetStdHandle, STD_OUTPUT_HANDLE
-    test eax, eax
-    jz ncp_done
-    cmp eax, -1
-    je ncp_done
-
-    invoke GetFileType, eax
-    cmp eax, FILE_TYPE_CHAR
-    jne ncp_done
-
-    invoke GetStdHandle, STD_INPUT_HANDLE
-    test eax, eax
-    jz ncp_done
-    cmp eax, -1
-    je ncp_done
-    mov edi, eax
-
-    lea ebx, ncpRec
-    mov word ptr [ebx+0],  1                ; EventType = KEY_EVENT
-    mov word ptr [ebx+2],  0                ; padding
-    mov dword ptr [ebx+4], 1                ; bKeyDown = TRUE
-    mov word ptr [ebx+8],  1                ; wRepeatCount = 1
-    mov word ptr [ebx+10], 0Dh              ; wVirtualKeyCode = VK_RETURN
-    mov word ptr [ebx+12], 1Ch              ; wVirtualScanCode
-    mov word ptr [ebx+14], 0Dh              ; uChar.UnicodeChar = '\r'
-    mov dword ptr [ebx+16], 0               ; dwControlKeyState
-    invoke WriteConsoleInputW, edi, ebx, 1, addr ncpWritten
-
-ncp_done:
-    ret
-NudgeConsolePrompt endp
 
 end

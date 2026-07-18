@@ -478,10 +478,8 @@ NonAdminRelayLaunch endp
 ; STD_OUTPUT_HANDLE, exactly like the non-admin path does after its child
 ; returns.
 ;
-; Note: unlike NonAdminRelayLaunch's non-admin path, this does not call
-; NudgeConsolePrompt -- that helper compensates for cmd.exe not waiting on
-; GUI-subsystem child processes, which does not apply here (this build is
-; console-subsystem, so cmd.exe already waits for us correctly).
+; As a console-subsystem process, cmd.exe waits for this relay to exit; no
+; synthetic console-input event or prompt-redraw workaround is required.
 ;
 ; Parameters:
 ;   ECX = argc

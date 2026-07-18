@@ -237,6 +237,7 @@ IID_IPersistFile dd 0000010bh
 ; Notepad dark palette while remaining plain GDI objects on older systems.
 g_darkMode       dd ?
 g_nativeDarkSupported dd ?
+g_themeApplying  dd ?          ; guards synchronous WM_THEMECHANGED re-entry
 g_brushBg        dq ?          ; #202020 main client background
 g_brushSurface   dq ?          ; #2B2B2B menu/status surface
 g_brushHover     dq ?          ; #383838 selected/hover surface

@@ -4,6 +4,9 @@ ApplyWindowTheme proc uses ebx esi hWnd:DWORD
     LOCAL hKey:DWORD
     LOCAL value:DWORD
     LOCAL cb:DWORD
+    cmp g_themeApplying, 0
+    jne awt32_return
+    mov g_themeApplying, 1
     mov g_darkMode, 0
     mov value, 1
     mov cb, 4
@@ -55,6 +58,8 @@ awt32_controls:
 @@:
     invoke InvalidateRect, hWnd, 0, 1
     invoke DrawMenuBar, hWnd
+    mov g_themeApplying, 0
+awt32_return:
     ret
 ApplyWindowTheme endp
 

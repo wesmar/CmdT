@@ -268,6 +268,21 @@ wp_themechange:
     xor eax, eax
     jmp wp_done
 
+wp_theme_repaint:
+    ; SetWindowTheme synchronously emits WM_THEMECHANGED. Reapplying the
+    ; complete theme from that notification recursively exhausts the stack.
+    ; The originating WM_SETTINGCHANGE path already updated every attribute;
+    ; this secondary notification only needs a repaint.
+    xor r9d, r9d
+    mov r8d, 1
+    xor edx, edx
+    mov rcx, [rbp-72]
+    sub rsp, 32
+    call InvalidateRect
+    add rsp, 32
+    xor eax, eax
+    jmp wp_done
+
 wp_erasebkgnd:
     cmp dword ptr g_darkMode, 0
     je wp_defproc

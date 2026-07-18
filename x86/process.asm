@@ -131,7 +131,7 @@ RunAsTrustedInstaller proc uses ebx esi edi cmdLine:DWORD, useNewConsole:DWORD
     ; Standard handles are inherited from parent process
     invoke GetCurrentProcess
     mov esi, eax
-
+    
     ; Get standard input handle
     invoke GetStdHandle, STD_INPUT_HANDLE
     mov dword ptr [startupInfo+56], eax     ; hStdInput field
@@ -286,7 +286,7 @@ rp_close_dup_err:
     cmp dupErr, 0
     je rp_close_proc_handles
     invoke CloseHandle, dword ptr [startupInfo+64]
-
+    
 rp_close_proc_handles:
     cmp hNullInput, 0
     je @F

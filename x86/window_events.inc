@@ -246,6 +246,13 @@ wp_themechange:
     xor eax, eax
     ret
 
+wp_theme_repaint:
+    ; SetWindowTheme may synchronously send WM_THEMECHANGED. The full theme
+    ; was already applied by WM_SETTINGCHANGE; repaint without re-entering it.
+    invoke InvalidateRect, hWnd, 0, 1
+    xor eax, eax
+    ret
+
 wp_destroy:
     ; ===== WM_DESTROY: Window is being destroyed =====
     cmp g_brushBg, 0

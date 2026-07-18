@@ -246,6 +246,7 @@ g_pAdjustWindowRectExForDpi  dd ?
 g_dpiApisInit                dd ?
 g_darkMode                   dd ?
 g_nativeDarkSupported        dd ?
+g_themeApplying              dd ?          ; guards synchronous theme re-entry
 g_brushBg                    dd ?
 g_brushSurface               dd ?
 g_brushHover                 dd ?

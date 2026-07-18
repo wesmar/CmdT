@@ -7,6 +7,10 @@ ApplyWindowTheme proc frame
     .allocstack 80
     .endprolog
 
+    cmp dword ptr g_themeApplying, 0
+    jne awt_return
+    mov dword ptr g_themeApplying, 1
+
     ; Local variables:
     ; [rsp+32] = hKey (8 bytes)
     ; [rsp+40] = valueData (4 bytes)
@@ -185,6 +189,8 @@ awt_backdrop:
     call DrawMenuBar
     add rsp, 32
 
+    mov dword ptr g_themeApplying, 0
+awt_return:
     xor eax, eax
     add rsp, 80
     pop rbx

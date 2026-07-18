@@ -41,7 +41,7 @@ WndProc proc uses ebx esi edi hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD
     cmp eax, WM_SETTINGCHANGE
     je wp_themechange
     cmp eax, WM_THEMECHANGED
-    je wp_themechange
+    je wp_theme_repaint
     cmp eax, WM_DESTROY
     je wp_destroy
     cmp eax, WM_DROPFILES

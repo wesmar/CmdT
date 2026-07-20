@@ -51,10 +51,6 @@ WndProc proc frame
     je wp_size
     cmp eax, WM_ERASEBKGND
     je wp_erasebkgnd
-    cmp eax, WM_MEASUREITEM
-    je wp_measureitem
-    cmp eax, WM_DRAWITEM
-    je wp_drawitem
     cmp eax, WM_CTLCOLOREDIT
     je wp_ctlcolor_edit
     cmp eax, WM_CTLCOLORLISTBOX
@@ -199,10 +195,6 @@ wp_theme_pref_done:
     lea r9, str_MenuBrowse
     mov r8d, ID_FILE_BROWSE
     mov edx, MF_STRING
-    cmp dword ptr g_darkMode, 0
-    je @F
-    or edx, MF_OWNERDRAW
-@@:
     mov rcx, r13
     sub rsp, 32
     call AppendMenuW
@@ -212,10 +204,6 @@ wp_theme_pref_done:
     xor r9d, r9d
     xor r8d, r8d
     mov edx, MF_SEPARATOR
-    cmp dword ptr g_darkMode, 0
-    je @F
-    or edx, MF_OWNERDRAW
-@@:
     mov rcx, r13
     sub rsp, 32
     call AppendMenuW
@@ -226,10 +214,6 @@ wp_theme_pref_done:
     lea r9, str_MenuHistory
     mov r8d, ID_FILE_HISTORY
     mov edx, MF_STRING
-    cmp dword ptr g_darkMode, 0
-    je @F
-    or edx, MF_OWNERDRAW
-@@:
     cmp dword ptr g_historyEnabled, 0
     je @F
     or edx, MF_CHECKED
@@ -243,10 +227,6 @@ wp_theme_pref_done:
     xor r9d, r9d
     xor r8d, r8d
     mov edx, MF_SEPARATOR
-    cmp dword ptr g_darkMode, 0
-    je @F
-    or edx, MF_OWNERDRAW
-@@:
     mov rcx, r13
     sub rsp, 32
     call AppendMenuW
@@ -256,10 +236,6 @@ wp_theme_pref_done:
     lea r9, str_MenuAbout
     mov r8d, ID_FILE_ABOUT
     mov edx, MF_STRING
-    cmp dword ptr g_darkMode, 0
-    je @F
-    or edx, MF_OWNERDRAW
-@@:
     mov rcx, r13
     sub rsp, 32
     call AppendMenuW
@@ -269,10 +245,6 @@ wp_theme_pref_done:
     xor r9d, r9d
     xor r8d, r8d
     mov edx, MF_SEPARATOR
-    cmp dword ptr g_darkMode, 0
-    je @F
-    or edx, MF_OWNERDRAW
-@@:
     mov rcx, r13
     sub rsp, 32
     call AppendMenuW
@@ -282,10 +254,6 @@ wp_theme_pref_done:
     lea r9, str_MenuExit
     mov r8d, ID_FILE_EXIT
     mov edx, MF_STRING
-    cmp dword ptr g_darkMode, 0
-    je @F
-    or edx, MF_OWNERDRAW
-@@:
     mov rcx, r13
     sub rsp, 32
     call AppendMenuW
@@ -295,10 +263,6 @@ wp_theme_pref_done:
     lea r9, str_MenuFile
     mov r8, r13                 ; Popup menu handle
     mov edx, MF_POPUP
-    cmp dword ptr g_darkMode, 0
-    je @F
-    or edx, MF_OWNERDRAW
-@@:
     mov rcx, r12                ; Main menu handle
     sub rsp, 32
     call AppendMenuW
@@ -500,62 +464,6 @@ wp_skip_loadmru:
     test rax, rax
     jz wp_create_fail
     mov g_hwndStatus, rax       ; Save status label handle
-
-    ; Convert the completed menu tree to owner-draw only after every child
-    ; control exists. This avoids re-entrant measurement during WM_CREATE.
-    jmp wp_menu_theme_done       ; native UxTheme dark menu is preferred
-    cmp dword ptr g_darkMode, 0
-    je wp_menu_theme_done
-    sub rsp, 40
-    lea rax, str_MenuBrowse
-    mov [rsp+32], rax
-    mov r9d, ID_FILE_BROWSE
-    mov r8d, MF_OWNERDRAW
-    mov edx, ID_FILE_BROWSE
-    mov rcx, r13
-    call ModifyMenuW
-    add rsp, 40
-    mov r8d, MF_OWNERDRAW
-    cmp dword ptr g_historyEnabled, 0
-    je @F
-    or r8d, MF_CHECKED
-@@:
-    sub rsp, 40
-    lea rax, str_MenuHistory
-    mov [rsp+32], rax
-    mov r9d, ID_FILE_HISTORY
-    mov edx, ID_FILE_HISTORY
-    mov rcx, r13
-    call ModifyMenuW
-    add rsp, 40
-    sub rsp, 40
-    lea rax, str_MenuAbout
-    mov [rsp+32], rax
-    mov r9d, ID_FILE_ABOUT
-    mov r8d, MF_OWNERDRAW
-    mov edx, ID_FILE_ABOUT
-    mov rcx, r13
-    call ModifyMenuW
-    add rsp, 40
-    sub rsp, 40
-    lea rax, str_MenuExit
-    mov [rsp+32], rax
-    mov r9d, ID_FILE_EXIT
-    mov r8d, MF_OWNERDRAW
-    mov edx, ID_FILE_EXIT
-    mov rcx, r13
-    call ModifyMenuW
-    add rsp, 40
-    sub rsp, 40
-    lea rax, str_MenuFile
-    mov [rsp+32], rax
-    mov r9, r13
-    mov r8d, MF_BYPOSITION or MF_POPUP or MF_OWNERDRAW
-    xor edx, edx
-    mov rcx, r12
-    call ModifyMenuW
-    add rsp, 40
-wp_menu_theme_done:
 
     ; Set focus to ComboBox
     mov rcx, g_hwndEdit

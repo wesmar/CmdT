@@ -78,32 +78,6 @@ etb32_done:
     ret
 EnsureThemeBrushes endp
 
-ApplyDarkMenuBar proc uses esi hWnd:DWORD
-    LOCAL mi[7]:DWORD
-    cmp g_darkMode, 0
-    je admb32_done
-    invoke GetMenu, hWnd
-    test eax, eax
-    jz admb32_done
-    mov esi, eax
-    lea edx, mi
-    xor eax, eax
-    mov ecx, 7
-admb32_clear:
-    mov [edx], eax
-    add edx, 4
-    loop admb32_clear
-    mov mi[0], 28
-    mov mi[4], 2                         ; MIM_BACKGROUND
-    mov eax, g_brushSurface
-    mov mi[16], eax                      ; hbrBack
-    invoke SetMenuInfo, esi, addr mi
-    invoke ModifyMenuW, esi, 0, MF_BYPOSITION or MF_POPUP or MF_OWNERDRAW, g_hMenuFile, offset str_MenuFile
-    invoke DrawMenuBar, hWnd
-admb32_done:
-    ret
-ApplyDarkMenuBar endp
-
 EnableNativeDarkMode proc uses ebx esi edi
     LOCAL osv[71]:DWORD
     lea edi, osv

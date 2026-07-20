@@ -31,10 +31,6 @@ WndProc proc uses ebx esi edi hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD
     je wp_size
     cmp eax, WM_ERASEBKGND
     je wp_erasebkgnd
-    cmp eax, WM_MEASUREITEM
-    je wp_measureitem
-    cmp eax, WM_DRAWITEM
-    je wp_drawitem
     cmp eax, WM_CTLCOLOREDIT
     je wp_ctlcolor_edit
     cmp eax, WM_CTLCOLORLISTBOX

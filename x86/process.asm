@@ -35,26 +35,107 @@ DestroyEnvironmentBlock     PROTO :DWORD
 CreateProcessWithTokenW     PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 CloseHandle                 PROTO :DWORD
 GetSystemDirectoryW         PROTO :DWORD,:DWORD
+GetCurrentDirectoryW        PROTO :DWORD,:DWORD
 GetStdHandle                PROTO :DWORD
 GetCurrentProcess           PROTO
 DuplicateHandle             PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 WaitForSingleObject         PROTO :DWORD,:DWORD
 GetExitCodeProcess          PROTO :DWORD,:DWORD
 CreateFileW                 PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+CommandLineToArgvW          PROTO :DWORD,:DWORD
+LocalFree                   PROTO :DWORD
+wcslen_p                   PROTO :DWORD
+wcscpy_p                   PROTO :DWORD,:DWORD
+wcscat_p                   PROTO :DWORD,:DWORD
 
 .const
 str_nulDevice dw 'N','U','L',0
+str_batchPrefix dw 'c','m','d','.','e','x','e',' ','/','d',' ','/','s',' ','/','c',' ','"',0
+str_batchSuffix dw '"',0
 
 ; ==============================================================================
 ; UNINITIALIZED DATA SECTION
 ; ==============================================================================
 .data?
-sysDirBuf       dw 260 dup(?)   ; Buffer for system directory path
+sysDirBuf       dw 260 dup(?)   ; Child working directory
+batchCmdBuf     dw 32768 dup(?) ; Private cmd.exe wrapper for .cmd/.bat
 
 ; ==============================================================================
 ; CODE SECTION
 ; ==============================================================================
 .code
+
+PrepareBatchCommand proc uses esi edi lpCmd:DWORD
+    LOCAL argc:DWORD
+    LOCAL result:DWORD
+
+    ; Strip outer quotes if present
+    mov eax, lpCmd
+    cmp word ptr [eax], 0022h
+    jne pbc_no_strip
+    invoke wcslen_p, eax
+    test eax, eax
+    jz pbc_no_strip
+    mov ecx, lpCmd
+    lea edx, [ecx + eax*2 - 2]
+    cmp word ptr [edx], 0022h
+    jne pbc_no_strip
+    add ecx, 2                  ; skip opening quote
+    mov lpCmd, ecx              ; update parameter in-place
+    mov word ptr [edx], 0       ; strip closing quote
+pbc_no_strip:
+
+    mov eax, lpCmd
+    mov result, eax
+    invoke CommandLineToArgvW, lpCmd, addr argc
+    test eax, eax
+    jz pbc_return
+    mov esi, eax                         ; LocalFree-able argv
+    mov edi, [esi]                       ; argv[0]
+    invoke wcslen_p, edi
+    cmp eax, 4
+    jb pbc_free
+    lea edi, [edi+eax*2]                 ; end of first token
+    cmp word ptr [edi-8], '.'
+    jne pbc_free
+    movzx eax, word ptr [edi-6]
+    or eax, 20h
+    cmp eax, 'c'
+    je pbc_cmd
+    cmp eax, 'b'
+    jne pbc_free
+    movzx eax, word ptr [edi-4]
+    or eax, 20h
+    cmp eax, 'a'
+    jne pbc_free
+    movzx eax, word ptr [edi-2]
+    or eax, 20h
+    cmp eax, 't'
+    jne pbc_free
+    jmp pbc_wrap
+pbc_cmd:
+    movzx eax, word ptr [edi-4]
+    or eax, 20h
+    cmp eax, 'm'
+    jne pbc_free
+    movzx eax, word ptr [edi-2]
+    or eax, 20h
+    cmp eax, 'd'
+    jne pbc_free
+pbc_wrap:
+    invoke wcslen_p, lpCmd
+    cmp eax, 32748
+    ja pbc_free
+    invoke wcscpy_p, offset batchCmdBuf, offset str_batchPrefix
+    invoke wcscat_p, offset batchCmdBuf, lpCmd
+    invoke wcscat_p, offset batchCmdBuf, offset str_batchSuffix
+    mov result, offset batchCmdBuf
+pbc_free:
+    invoke LocalFree, esi
+pbc_return:
+    mov eax, result
+    ret
+PrepareBatchCommand endp
 
 ; ==============================================================================
 ; RunAsTrustedInstaller - Execute Command with TrustedInstaller Privileges
@@ -76,7 +157,7 @@ sysDirBuf       dw 260 dup(?)   ; Buffer for system directory path
 ;   2. Initialize STARTUPINFO structure
 ;   3. Configure console mode (inherit or new)
 ;   4. Create environment block for token
-;   5. Get system directory for working directory
+;   5. Preserve caller's current directory (System32 only as fallback)
 ;   6. Create process with CreateProcessWithTokenW
 ;   7. Clean up handles and environment block
 ;   8. Return success/failure status
@@ -99,6 +180,9 @@ RunAsTrustedInstaller proc uses ebx esi edi cmdLine:DWORD, useNewConsole:DWORD
     LOCAL childExit:DWORD                   ; result returned by waited child
     LOCAL hNullInput:DWORD                  ; inheritable NUL used by relay
     LOCAL nullSA[3]:DWORD                   ; SECURITY_ATTRIBUTES (x86)
+
+    invoke PrepareBatchCommand, cmdLine
+    mov cmdLine, eax
 
     ; Acquire TrustedInstaller security token
     invoke GetTIToken
@@ -228,8 +312,16 @@ rp_setup_env:
     mov hEnv, 0                             ; Initialize to NULL
     invoke CreateEnvironmentBlock, addr hEnv, hToken, 0
     
-    ; Get Windows system directory for working directory
+    ; Preserve the caller's working directory so relative .cmd/.bat paths work.
+    ; Fall back to System32 if it does not fit in the MAX_PATH buffer.
+    invoke GetCurrentDirectoryW, 260, offset sysDirBuf
+    test eax, eax
+    jz rp_workdir_fallback
+    cmp eax, 260
+    jb rp_workdir_ready
+rp_workdir_fallback:
     invoke GetSystemDirectoryW, offset sysDirBuf, 260
+rp_workdir_ready:
     
     ; Create process with TrustedInstaller token
     ; Parameters:
@@ -239,7 +331,7 @@ rp_setup_env:
     ;   lpCommandLine       - Command to execute
     ;   dwCreationFlags     - Console + Unicode environment flags
     ;   lpEnvironment       - Environment block
-    ;   lpCurrentDirectory  - System directory
+    ;   lpCurrentDirectory  - Caller's current directory
     ;   lpStartupInfo       - Startup configuration
     ;   lpProcessInformation- Receives process/thread handles
     invoke CreateProcessWithTokenW, hToken, 1, 0, cmdLine, dwCreationFlags, hEnv, offset sysDirBuf, addr startupInfo, addr procInfo

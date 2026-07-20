@@ -172,7 +172,7 @@ str_MenuAbout   dw '&','A','b','o','u','t',0
 
 ; About dialog text (includes author information and all CLI commands)
 str_AboutTitle  dw 'A','b','o','u','t',0
-str_AboutText   dw 'C','M','D','T',' ',' ','v','1','.','0','.','0','.','7',10,10
+str_AboutText   dw 'C','M','D','T',' ',' ','v','1','.','0','.','0','.','8',10,10
                 dw 'A','u','t','h','o','r',':',' ',' ','M','a','r','e','k',' ','W','e','s','o',0142h,'o','w','s','k','i',10
                 dw 'h','t','t','p','s',':','/','/','k','v','c','.','p','l',10
                 dw 'm','a','r','e','k','@','k','v','c','.','p','l',10,10

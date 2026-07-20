@@ -141,7 +141,7 @@ privStr_8  dw 'M','a','n','a','g','e','V','o','l','u','m','e',0
 privStr_9  dw 'S','e','c','u','r','i','t','y',0
 privStr_10 dw 'S','h','u','t','d','o','w','n',0
 privStr_11 dw 'S','y','s','t','e','m','t','i','m','e',0
-privStr_12 dw 'T','c','b',0
+privStr_12 dw 'T','c','b',0                                    ; "act as part of the OS" - SeTcbPrivilege
 privStr_13 dw 'I','n','c','r','e','a','s','e','Q','u','o','t','a',0
 privStr_14 dw 'A','u','d','i','t',0
 privStr_15 dw 'C','h','a','n','g','e','N','o','t','i','f','y',0
@@ -158,11 +158,11 @@ privStr_25 dw 'C','r','e','a','t','e','S','y','m','b','o','l','i','c','L','i','n
 privStr_26 dw 'I','n','c','r','e','a','s','e','B','a','s','e','P','r','i','o','r','i','t','y',0
 privStr_27 dw 'R','e','m','o','t','e','S','h','u','t','d','o','w','n',0
 privStr_28 dw 'I','n','c','r','e','a','s','e','W','o','r','k','i','n','g','S','e','t',0
-privStr_29 dw 'R','e','l','a','b','e','l',0
+privStr_29 dw 'R','e','l','a','b','e','l',0                    ; relabel object integrity level - SeRelabelPrivilege
 privStr_30 dw 'D','e','l','e','g','a','t','e','S','e','s','s','i','o','n','U','s','e','r','I','m','p','e','r','s','o','n','a','t','e',0
-privStr_31 dw 'T','r','u','s','t','e','d','C','r','e','d','M','a','n','A','c','c','e','s','s',0
+privStr_31 dw 'T','r','u','s','t','e','d','C','r','e','d','M','a','n','A','c','c','e','s','s',0  ; read stored Credential Manager entries
 privStr_32 dw 'E','n','a','b','l','e','D','e','l','e','g','a','t','i','o','n',0
-privStr_33 dw 'S','y','n','c','A','g','e','n','t',0
+privStr_33 dw 'S','y','n','c','A','g','e','n','t',0             ; Active Directory sync agent (LDAP directory-replication) privilege
 
 ; Prefix and suffix for privilege name construction
 privPrefix dw 'S','e',0

@@ -21,6 +21,19 @@
 ; to, never called, and rely on the existing rbp-relative locals
 ; ([rbp-64] argc, [rbp-104] SECURITY_ATTRIBUTES for the -outfile open).
 ; Every exit path ends in ExitProcess; control never returns to the caller.
+;
+; NOTE on repeated .lnk-detection logic: the "scan for space/quote, check
+; last 4 chars against .lnk" pattern appears three times in this file --
+; once in mode_file_run, and twice more inside mode_cli_setup/run_command
+; (the check_whole_path label handles the no-embedded-space case separately
+; from the general path). This is intentional duplication, not an oversight:
+; each site starts from a different register state and quoting context
+; (context-menu argv vs. raw GetCommandLineW remainder vs. a path with no
+; trailing arguments), and folding them into one shared routine would need
+; to pass all of rsi/rdi/rbx/r8-r11 plus the quote-state flag through a
+; parameter list, which was judged less readable than three short, self-
+; contained copies. If this needs a fourth call site, consider factoring it
+; out into strutil.asm instead of copying it a fourth time.
 ; ==============================================================================
 
 option casemap:none

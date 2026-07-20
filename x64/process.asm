@@ -19,30 +19,190 @@ EXTRN DestroyEnvironmentBlock:PROC
 EXTRN CreateProcessWithTokenW:PROC
 EXTRN CloseHandle:PROC
 EXTRN GetSystemDirectoryW:PROC
+EXTRN GetCurrentDirectoryW:PROC
 EXTRN GetStdHandle:PROC
 EXTRN GetCurrentProcess:PROC
 EXTRN DuplicateHandle:PROC
 EXTRN WaitForSingleObject:PROC
 EXTRN GetExitCodeProcess:PROC
 EXTRN CreateFileW:PROC
+EXTRN GetLastError:PROC
+EXTRN wcslen_p:PROC
 
 .const
 str_nulDevice dw 'N','U','L',0
+str_batchPrefix dw 'c','m','d','.','e','x','e',' ','/','d',' ','/','s',' ','/','c',' ','"',0
 
 ; ==============================================================================
 ; UNINITIALIZED DATA SECTION
 ; ==============================================================================
 .data?
-; Buffer for system directory path (MAX_PATH = 260 WCHARs)
+; Child working directory and private wrapper for .cmd/.bat command lines.
 sysDirBuf       dw 260 dup(?)
+batchCmdBuf     dw 32768 dup(?)
 
 ; ==============================================================================
 ; CODE SECTION
 ; ==============================================================================
 .code
 
+; CreateProcess does not invoke the command interpreter for batch files.
+; Detect a .cmd/.bat first token and return a private command line wrapped as:
+;   cmd.exe /d /s /c "<original command line>"
+; Non-batch commands are returned unchanged in RAX.
+PrepareBatchCommand proc
+    ; Strip outer quotes if present (e.g. "whoami /groups" or "cmd /c ...").
+    ; This must happen *before* the .cmd/.bat extension scan below: that scan
+    ; measures the token length and reads backward from its end ([r8-8]..
+    ; [r8-2]) to compare against ".cmd"/".bat". A trailing quote would shift
+    ; every one of those offsets by one WCHAR and make the extension check
+    ; miss a legitimately quoted batch file. Stripping first keeps the scan's
+    ; offsets aligned to the real end of the token in both call paths (direct
+    ; RunAsTrustedInstaller and the relay's re-spawned command).
+    cmp word ptr [rcx], 0022h
+    jne pbc_no_strip
+    
+    sub rsp, 40
+    mov [rsp+32], rcx           ; save rcx
+    call wcslen_p
+    mov rcx, [rsp+32]           ; restore rcx
+    add rsp, 40
+    
+    test rax, rax
+    jz pbc_no_strip
+    lea r8, [rcx + rax*2 - 2]
+    cmp word ptr [r8], 0022h
+    jne pbc_no_strip
+    add rcx, 2                  ; skip opening quote
+    mov word ptr [r8], 0        ; strip closing quote
+pbc_no_strip:
+    mov rax, rcx
+    mov r8, rcx
+    cmp word ptr [r8], '"'
+    jne pbc_scan_unquoted
+    add r8, 2
+pbc_scan_quoted:
+    movzx edx, word ptr [r8]
+    test edx, edx
+    jz pbc_return
+    cmp edx, '"'
+    je pbc_token_end
+    add r8, 2
+    jmp pbc_scan_quoted
+pbc_scan_unquoted:
+    movzx edx, word ptr [r8]
+    test edx, edx
+    jz pbc_token_end
+    cmp edx, ' '
+    je pbc_token_end
+    cmp edx, 9
+    je pbc_token_end
+    add r8, 2
+    jmp pbc_scan_unquoted
+
+pbc_token_end:
+    mov r9, r8
+    sub r9, rcx
+    cmp word ptr [rcx], '"'
+    jne @F
+    sub r9, 2                  ; exclude the opening quote from token length
+@@:
+    ; Extension check reads the last 4 WCHARs of the token *backward from its
+    ; end* (r8 = one-past-last character): [r8-8] is 4 chars back, [r8-6] is
+    ; 3 back, and so on, each offset -2 bytes because characters here are
+    ; UTF-16 (2 bytes each), not the 1-byte ASCII a C string would use.
+    ; This only looks at ".cmd" / ".bat"; anything else (.exe, no extension,
+    ; a bare command like "dir") falls through to pbc_return unmodified.
+    cmp r9, 8                  ; four UTF-16 characters
+    jb pbc_return
+    cmp word ptr [r8-8], '.'
+    jne pbc_return
+    movzx edx, word ptr [r8-6]
+    or edx, 20h
+    cmp edx, 'c'
+    je pbc_check_cmd
+    cmp edx, 'b'
+    jne pbc_return
+    movzx edx, word ptr [r8-4]
+    or edx, 20h
+    cmp edx, 'a'
+    jne pbc_return
+    movzx edx, word ptr [r8-2]
+    or edx, 20h
+    cmp edx, 't'
+    jne pbc_return
+    jmp pbc_wrap
+pbc_check_cmd:
+    movzx edx, word ptr [r8-4]
+    or edx, 20h
+    cmp edx, 'm'
+    jne pbc_return
+    movzx edx, word ptr [r8-2]
+    or edx, 20h
+    cmp edx, 'd'
+    jne pbc_return
+
+pbc_wrap:
+    lea r10, batchCmdBuf
+    lea r11, str_batchPrefix
+pbc_copy_prefix:
+    mov dx, word ptr [r11]
+    mov word ptr [r10], dx
+    add r11, 2
+    add r10, 2
+    test dx, dx
+    jnz pbc_copy_prefix
+    sub r10, 2                 ; overwrite the prefix terminator
+    mov r11, rcx
+    ; Cap = sizeof(batchCmdBuf) [32768 WCHARs] minus room already spent:
+    ;   - str_batchPrefix content just copied in above (18 WCHARs)
+    ;   - the closing quote written at pbc_close (1 WCHAR)
+    ;   - the final NUL terminator (1 WCHAR)
+    ; 32768 - 18 - 1 - 1 = 32748. If the source command line is longer than
+    ; this, it is silently truncated (loop below stops when ecx hits 0);
+    ; there is no overflow, just truncation of the copied command text.
+    mov ecx, 32748             ; capacity minus prefix, closing quote and NUL
+pbc_copy_command:
+    mov dx, word ptr [r11]
+    test dx, dx
+    jz pbc_close
+    test ecx, ecx
+    jz pbc_return
+    mov word ptr [r10], dx
+    add r11, 2
+    add r10, 2
+    dec ecx
+    jmp pbc_copy_command
+pbc_close:
+    mov word ptr [r10], '"'
+    mov word ptr [r10+2], 0
+    lea rax, batchCmdBuf
+pbc_return:
+    ret
+PrepareBatchCommand endp
+
 ; ==============================================================================
 ; RunAsTrustedInstaller - Execute Command with Elevated Privileges
+;
+; Stack frame layout (post-prolog, all offsets rsp-relative, frame size 264):
+;   [rsp+40..143]   STARTUPINFOW (104 bytes, zeroed as 13 qwords: cb field at
+;                    +40, dwFlags at +40+60, wShowWindow at +40+64,
+;                    hStdInput/Output/Error at +40+80/+40+88/+40+96)
+;   [rsp+152..175]  PROCESS_INFORMATION (hProcess, hThread, dwProcessId,
+;                    dwThreadId - 3 qwords zeroed, only first two are handles)
+;   [rsp+184]       lpEnvironment (QWORD, filled by CreateEnvironmentBlock)
+;   [rsp+192]       stdin duplicate-succeeded flag (DWORD, 0/1)
+;   [rsp+196]       stdout duplicate-succeeded flag (DWORD, 0/1)
+;   [rsp+200]       stderr duplicate-succeeded flag (DWORD, 0/1)
+;   [rsp+204]       child exit-code scratch (DWORD, for GetExitCodeProcess)
+;   [rsp+208..231]  SECURITY_ATTRIBUTES for the relay-mode NUL-device open
+;                    (24 bytes: nLength, padding, lpSecurityDescriptor,
+;                    bInheritHandle, padding)
+;   [rsp+232]       relay-mode NUL-device read handle (QWORD), closed on
+;                    every exit path once no longer needed
+; Everything above is addressed at a further +80 (e.g. [rsp+80+40]) inside
+; the CreateProcessWithTokenW call site, because that call temporarily does
+; `sub rsp, 80` for its own stack parameters/shadow space first.
 ; ==============================================================================
 RunAsTrustedInstaller proc frame
     push rbx
@@ -61,8 +221,9 @@ RunAsTrustedInstaller proc frame
     .allocstack 264
     .endprolog
 
-    mov r12, rcx                ; R12 = command line string
-    mov ebx, edx                ; EBX = useNewConsole flag
+    mov ebx, edx                ; EBX = useNewConsole flag (save before it is overwritten by PrepareBatchCommand)
+    call PrepareBatchCommand
+    mov r12, rax                ; R12 = executable or wrapped batch command
 
     ; Obtain TrustedInstaller token
     call GetTIToken
@@ -241,12 +402,25 @@ rp_setup_env:
     call CreateEnvironmentBlock
     add rsp, 32
 
-    ; Get Windows System directory path
+    ; Preserve the caller's working directory. This is required for relative
+    ; commands such as `cmdt -cli maintenance.cmd`; fall back to System32 only
+    ; if the current directory cannot be represented in this MAX_PATH buffer.
+    mov ecx, 260
+    lea rdx, sysDirBuf
+    sub rsp, 32
+    call GetCurrentDirectoryW
+    add rsp, 32
+    test eax, eax
+    jz rp_workdir_fallback
+    cmp eax, 260
+    jb rp_workdir_ready
+rp_workdir_fallback:
     lea rcx, sysDirBuf
     mov edx, 260
     sub rsp, 32
     call GetSystemDirectoryW
     add rsp, 32
+rp_workdir_ready:
 
     ; Prepare stack parameters for CreateProcessWithTokenW
     ; Function requires 10 parameters (4 in registers, 6 on stack)
@@ -389,6 +563,11 @@ rp_skip_ht:
     jmp rp_done
 
 rp_fail:
+    sub rsp, 32
+    call GetLastError
+    add rsp, 32
+    mov dword ptr g_childExitCode, eax
+
     mov rcx, qword ptr [rsp+232]
     test rcx, rcx
     jz @F

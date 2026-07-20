@@ -188,43 +188,6 @@ wp_erasebkgnd:
     mov eax, 1
     ret
 
-wp_measureitem:
-    cmp g_darkMode, 0
-    je wp_defproc
-    mov esi, lParam
-    cmp dword ptr [esi], ODT_MENU
-    jne wp_defproc
-    mov eax, [esi+20]                    ; itemData
-    cmp eax, offset str_MenuFile
-    jne wp_defproc
-    mov dword ptr [esi+12], 52
-    mov dword ptr [esi+16], 30
-    mov eax, 1
-    ret
-
-wp_drawitem:
-    cmp g_darkMode, 0
-    je wp_defproc
-    mov esi, lParam
-    cmp dword ptr [esi], ODT_MENU
-    jne wp_defproc
-    cmp dword ptr [esi+44], offset str_MenuFile
-    jne wp_defproc
-    mov eax, g_brushSurface
-    test dword ptr [esi+16], ODS_SELECTED
-    jz @F
-    mov eax, g_brushHover
-@@:
-    lea edx, [esi+28]                    ; rcItem
-    invoke FillRect, [esi+24], edx, eax
-    invoke SetTextColor, [esi+24], 00F2F2F2h
-    invoke SetBkMode, [esi+24], TRANSPARENT
-    add dword ptr [esi+28], 16
-    lea eax, [esi+28]
-    invoke DrawTextW, [esi+24], offset str_MenuFile, -1, eax, DT_SINGLELINE or DT_VCENTER or DT_LEFT
-    mov eax, 1
-    ret
-
 wp_ctlcolor_edit:
     cmp g_darkMode, 0
     je wp_defproc

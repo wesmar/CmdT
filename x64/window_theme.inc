@@ -226,50 +226,6 @@ etb_done:
     ret
 EnsureThemeBrushes endp
 
-ApplyDarkMenuBar proc frame
-    push rbx
-    .pushreg rbx
-    sub rsp, 80
-    .allocstack 80
-    .endprolog
-    cmp dword ptr g_darkMode, 0
-    je admb_done
-    mov rbx, rcx
-    call GetMenu
-    test rax, rax
-    jz admb_done
-    mov qword ptr [rsp+32], rax   ; keep clear of MENUINFO at rsp+40..79
-    lea r10, [rsp+40]
-    xor rax, rax
-    mov qword ptr [r10], rax
-    mov qword ptr [r10+8], rax
-    mov qword ptr [r10+16], rax
-    mov qword ptr [r10+24], rax
-    mov qword ptr [r10+32], rax
-    mov dword ptr [r10], 40
-    mov dword ptr [r10+4], 2              ; MIM_BACKGROUND
-    mov rax, g_brushSurface
-    mov qword ptr [r10+16], rax           ; hbrBack
-    lea rdx, [rsp+40]
-    mov rcx, qword ptr [rsp+32]
-    call SetMenuInfo
-    sub rsp, 40
-    lea rax, str_MenuFile
-    mov [rsp+32], rax
-    mov r9, g_hMenuFile
-    mov r8d, MF_BYPOSITION or MF_POPUP or MF_OWNERDRAW
-    xor edx, edx
-    mov rcx, qword ptr [rsp+40+32]
-    call ModifyMenuW
-    add rsp, 40
-    mov rcx, rbx
-    call DrawMenuBar
-admb_done:
-    add rsp, 80
-    pop rbx
-    ret
-ApplyDarkMenuBar endp
-
 EnableNativeDarkMode proc frame
     push rbx
     .pushreg rbx

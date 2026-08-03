@@ -31,7 +31,7 @@ CMDT solves this by duplicating the TrustedInstaller service process token and u
 
 CMDT is a **dual-mode binary** — a single executable that operates as both a graphical desktop application and a headless command-line tool, selected at runtime based on arguments. This is not two programs stitched together; the same PE binary, the same entry point, and the same token acquisition pipeline serve both modes.
 
-Both architectures link as `/subsystem:console`, not `/subsystem:windows`. This is a deliberate trade-off: a console-subsystem process is what `cmd.exe` actually waits on synchronously before printing its next prompt — the PE subsystem field is checked by `cmd.exe` at `CreateProcess` time, before any of the child's own code runs, so it cannot be influenced at runtime. A GUI-subsystem binary is never waited on, which is exactly why some older TrustedInstaller launchers exhibit a glued-together prompt or a stray blank line after `-cli` output: the shell already redrew its prompt before the child finished writing. Console subsystem makes `-cli` behave like any other console tool, with correct output ordering and no cosmetic redraw hacks needed.
+All three architectures link as `/subsystem:console`, not `/subsystem:windows`. This is a deliberate trade-off: a console-subsystem process is what `cmd.exe` actually waits on synchronously before printing its next prompt — the PE subsystem field is checked by `cmd.exe` at `CreateProcess` time, before any of the child's own code runs, so it cannot be influenced at runtime. A GUI-subsystem binary is never waited on, which is exactly why some older TrustedInstaller launchers exhibit a glued-together prompt or a stray blank line after `-cli` output: the shell already redrew its prompt before the child finished writing. Console subsystem makes `-cli` behave like any other console tool, with correct output ordering and no cosmetic redraw hacks needed.
 
 The cost of that choice is the default (no-argument) GUI launch: the OS attaches a console window to any console-subsystem process before its code runs, which would otherwise cause a visible flash on every double-click launch from Explorer. CMDT avoids it without spawning a second process — at startup, if no arguments were given, it calls `GetConsoleProcessList` to check whether the console belongs **exclusively** to this process (the common case: Explorer, a shortcut, the Run dialog) or is **shared** with an interactive parent shell (the user typed `cmdt` inside an already-open `cmd.exe`). In the exclusive case it calls `GetConsoleWindow` + `ShowWindow(SW_HIDE)` immediately, before falling into the GUI message loop — no `CreateProcessW`, no second process, just two Win32 calls between process start and the window being hidden. In the shared case it leaves the console alone entirely; hiding it would hide the user's whole terminal. Verified via `EnumWindows` + `IsWindowVisible` on the console's own `ConsoleWindowClass` window in both scenarios.
 
@@ -43,7 +43,7 @@ All three architectures — **x86 (IA-32)**, **x64 (AMD64)**, and **ARM64 (AArch
 | `cmdt_x86.exe` | **29.50 KiB (30,208 bytes)** | **<30 KiB** | x86 / IA-32 |
 | `cmdt_arm64.exe` | **35.50 KiB (36,352 bytes)** | **<40 KiB** | ARM64 / AArch64 |
 
-For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in well under 40 KB on x64, 30 KB on x86, and 40 KB on ARM64. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
+For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in well under 40 KB on x64, 30 KB on x86, and under 40 KB on ARM64. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
 
 ---
 
@@ -75,7 +75,7 @@ For comparison, equivalent tools written in C++ or C# typically weigh in at 50�
 
 ## Installation
 
-No installation required. Copy `cmdt_x64.exe` (or `cmdt_x86.exe` for 32-bit systems) anywhere on your system. A natural location is `C:\Windows\System32` — this is where Microsoft places its own system utilities, and it makes CMDT available from any command prompt without modifying `PATH`.
+No installation required. Copy the binary for your architecture anywhere on your system — `cmdt_x64.exe` on x86-64 Windows, `cmdt_arm64.exe` on ARM64 Windows, or `cmdt_x86.exe` on 32-bit systems. A natural location is `C:\Windows\System32` — this is where Microsoft places its own system utilities, and it makes CMDT available from any command prompt without modifying `PATH`.
 
 CMDT requires Administrator privileges. If launched without elevation, it **automatically re-launches itself** with a UAC prompt via `ShellExecuteExW("runas")`, forwarding all original arguments to the elevated instance. No manual "Run as Administrator" is needed.
 
@@ -519,11 +519,11 @@ CMDT explicitly bypasses this restriction by calling `ChangeWindowMessageFilterE
 .\build.ps1
 ```
 
-The build script auto-detects the newest installed Visual Studio C++ toolchain and Windows SDK (`Get-LatestVCToolsPath`/`Get-LatestWinSDK` — see the 2026 changelog entry below for why this isn't a hardcoded path), assembles all source modules for both architectures as `/subsystem:console`, compiles the resource file (`cmdt.rc`) with the manifest, and links against system import libraries only:
+The build script auto-detects the newest installed Visual Studio C++ toolchain and Windows SDK (`Get-LatestVCToolsPath`/`Get-LatestWinSDK`/`Get-LatestArmToolsPath` — see the 2026 changelog entries below for why these aren't hardcoded paths), assembles all source modules for all three architectures as `/subsystem:console`, compiles the resource file (`cmdt.rc`) with the manifest, and links against system import libraries only:
 
 `kernel32.lib`, `user32.lib`, `advapi32.lib`, `shell32.lib`, `comdlg32.lib`, `ole32.lib`, `gdi32.lib`, `shlwapi.lib`, `userenv.lib`, `dwmapi.lib`, `uxtheme.lib`, `OleAut32.lib`
 
-No CRT library is linked. The entry point is `mainCRTStartup` (x64) / `start` (x86) — these are raw assembly procedures, not CRT initialization stubs.
+No CRT library is linked. The entry point is `mainCRTStartup` (x64 / ARM64) / `start` (x86) — these are raw assembly procedures, not CRT initialization stubs.
 
 Output binaries are placed in the `bin\` directory (gitignored — rebuilt fresh by every `.\build.ps1` run; the tracked release copies live under `data\` for packaging, kept in sync manually).
 
@@ -564,13 +564,13 @@ cmdt/
 │   └── test.bat
 ├── cmdt.rc                       # Version info resource
 ├── cmdt.manifest                 # Application manifest (DPI, visual styles, execution level)
-├── build.ps1                     # Build script (auto-detects VS/SDK, assembles + links both architectures)
+├── build.ps1                     # Build script (auto-detects VS/SDK, assembles + links all three architectures)
 └── README.md                     # This file (documentation)
 ```
 
 Every source file in `x64/` has a corresponding counterpart in `x86/` and `arm64/`. The x86 versions use `.586` + `flat/stdcall` MASM syntax with `invoke` macros; the x64 versions use raw `proc frame` with explicit SEH prologue/epilogue annotations (`.pushreg`, `.allocstack`, `.setframe`, `.endprolog`); the ARM64 versions use A64 instruction syntax with `PROC`/`ENDP` and AArch64 calling-convention register assignments, assembled by `armasm64.exe`. All three targets share the same `.rc` and `.manifest` files.
 
-Both source trees were originally monolithic — a single ~90 KB `main.asm` on each side. A first pass split the dispatcher, help, relay, install, and string helpers into their own files. `window.asm` itself remained a second, GUI-specific tapeworm (the entire `WndProc`, DPI handling, dark-mode theming, MRU list, and command dispatch all in one file) until a second pass broke it into the six `window_*.inc` files listed above, `include`d back into `window.asm` at assembly time. They deliberately remain one MASM translation unit, preserving internal labels, stack-frame relationships, and call boundaries without adding runtime indirection. The linked binaries remain within the same size limits; the refactor does not claim byte-for-byte object identity because include ordering may change procedure layout. The split is identical on both architectures, so any reader who learns one tree can navigate the other without re-orientation.
+The x64 and x86 source trees were originally monolithic — a single ~90 KB `main.asm` on each side. A first pass split the dispatcher, help, relay, install, and string helpers into their own files. `window.asm` itself remained a second, GUI-specific tapeworm (the entire `WndProc`, DPI handling, dark-mode theming, MRU list, and command dispatch all in one file) until a second pass broke it into the six `window_*.inc` files listed above, `include`d back into `window.asm` at assembly time. They deliberately remain one MASM translation unit, preserving internal labels, stack-frame relationships, and call boundaries without adding runtime indirection. The linked binaries remain within the same size limits; the refactor does not claim byte-for-byte object identity because include ordering may change procedure layout. The ARM64 tree was written from the start with the same modular structure rather than being split from a monolith. The module layout is identical across all three architectures, so any reader who learns one tree can navigate the others without re-orientation.
 
 ---
 

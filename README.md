@@ -6,7 +6,7 @@
 
 CMDT starts a process with a primary token duplicated from the running **Windows Modules Installer (TrustedInstaller)** service. That token normally identifies its user as `NT AUTHORITY\SYSTEM` and carries the enabled `NT SERVICE\TrustedInstaller` service SID used by ACLs protecting Windows components. CMDT also attempts to enable its table of 34 Windows token privileges before process creation; Windows still remains the final authority on privileges present in the source token and on every object-specific ACL check.
 
-The current release binaries are **38.00 KiB (38,912 bytes)** on x64, **29.50 KiB (30,208 bytes)** on x86, and **TBD** on ARM64, with enforced build limits of under 40 KiB, under 30 KiB, and under TBD respectively. No C runtime, framework, or third-party runtime is required.
+The current release binaries are **38.00 KiB (38,912 bytes)** on x64, **29.50 KiB (30,208 bytes)** on x86, and **35.50 KiB (36,352 bytes)** on ARM64, with enforced build limits of under 40 KiB, under 30 KiB, and under 40 KiB respectively. No C runtime, framework, or third-party runtime is required.
 
 ---
 
@@ -41,9 +41,9 @@ All three architectures — **x86 (IA-32)**, **x64 (AMD64)**, and **ARM64 (AArch
 |---|---:|---:|---|
 | `cmdt_x64.exe` | **38.00 KiB (38,912 bytes)** | **<40 KiB** | x64 / AMD64 |
 | `cmdt_x86.exe` | **29.50 KiB (30,208 bytes)** | **<30 KiB** | x86 / IA-32 |
-| `cmdt_arm64.exe` | **TBD** | **TBD** | ARM64 / AArch64 |
+| `cmdt_arm64.exe` | **35.50 KiB (36,352 bytes)** | **<40 KiB** | ARM64 / AArch64 |
 
-For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in well under 40 KB on x64, 30 KB on x86, and TBD on ARM64. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
+For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in well under 40 KB on x64, 30 KB on x86, and 40 KB on ARM64. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
 
 ---
 
@@ -644,7 +644,7 @@ The ARM64 build carries the same full feature set: GUI mode (Shift+Minimize tray
 
 `pack-data.sh`, `release-now.sh`, and `release-update.sh` updated to include `cmdt_arm64.exe` in the release archive and size reporting.
 
-**Release size:** `cmdt_arm64.exe` is TBD (enforced limit TBD).
+**Release size:** `cmdt_arm64.exe` is **35.50 KiB (36,352 bytes)** (enforced limit `<40 KiB`).
 
 </details>
 
@@ -855,9 +855,9 @@ During early development, the minimal proof-of-concept builds were significantly
 | Hybrid GUI/CLI (no registry, no manifest) | **6 KB** | Added window creation, MRU, drag-and-drop |
 | Current full build (x86) | **<30 KB** | Hybrid mode, context menu, UAC self-elevation, manifest, COM `.lnk` resolution, system-aware dark mode |
 | Current full build (x64) | **<40 KB** | Same feature set, 64-bit calling convention overhead, DPI-aware layout |
-| Current full build (ARM64) | **TBD** | Same feature set, A64 instruction encoding, AArch64 calling convention |
+| Current full build (ARM64) | **<40 KB** | Same feature set, A64 instruction encoding, AArch64 calling convention |
 
-The growth from 4–6 KB to the current size (under 30 KB on x86, under 40 KB on x64, TBD on ARM64) is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, the Sticky Keys IFEO hook with Defender exclusion management, UAC self-elevation, the wide-character string constants for registry paths and UI text, and the dark-mode implementation (cached brushes, control theming, and dynamically resolved `uxtheme.dll` ordinals). The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
+The growth from 4–6 KB to the current size (under 30 KB on x86, under 40 KB on x64, under 40 KB on ARM64) is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, the Sticky Keys IFEO hook with Defender exclusion management, UAC self-elevation, the wide-character string constants for registry paths and UI text, and the dark-mode implementation (cached brushes, control theming, and dynamically resolved `uxtheme.dll` ordinals). The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
 
 ---
 

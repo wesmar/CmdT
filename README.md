@@ -2,11 +2,11 @@
 
 ![cmdt](images/cmdt.gif)
 
-**A compact TrustedInstaller process launcher for Windows, written entirely in native x86/x64 assembly.**
+**A compact TrustedInstaller process launcher for Windows, written entirely in native x86/x64/ARM64 assembly.**
 
 CMDT starts a process with a primary token duplicated from the running **Windows Modules Installer (TrustedInstaller)** service. That token normally identifies its user as `NT AUTHORITY\SYSTEM` and carries the enabled `NT SERVICE\TrustedInstaller` service SID used by ACLs protecting Windows components. CMDT also attempts to enable its table of 34 Windows token privileges before process creation; Windows still remains the final authority on privileges present in the source token and on every object-specific ACL check.
 
-The current release binaries are **38.00 KiB (38,912 bytes)** on x64 and **29.50 KiB (30,208 bytes)** on x86, with enforced build limits of under 40 KiB and under 30 KiB respectively. No C runtime, framework, or third-party runtime is required.
+The current release binaries are **38.00 KiB (38,912 bytes)** on x64, **29.50 KiB (30,208 bytes)** on x86, and **TBD** on ARM64, with enforced build limits of under 40 KiB, under 30 KiB, and under TBD respectively. No C runtime, framework, or third-party runtime is required.
 
 ---
 
@@ -35,14 +35,15 @@ Both architectures link as `/subsystem:console`, not `/subsystem:windows`. This 
 
 The cost of that choice is the default (no-argument) GUI launch: the OS attaches a console window to any console-subsystem process before its code runs, which would otherwise cause a visible flash on every double-click launch from Explorer. CMDT avoids it without spawning a second process — at startup, if no arguments were given, it calls `GetConsoleProcessList` to check whether the console belongs **exclusively** to this process (the common case: Explorer, a shortcut, the Run dialog) or is **shared** with an interactive parent shell (the user typed `cmdt` inside an already-open `cmd.exe`). In the exclusive case it calls `GetConsoleWindow` + `ShowWindow(SW_HIDE)` immediately, before falling into the GUI message loop — no `CreateProcessW`, no second process, just two Win32 calls between process start and the window being hidden. In the shared case it leaves the console alone entirely; hiding it would hide the user's whole terminal. Verified via `EnumWindows` + `IsWindowVisible` on the console's own `ConsoleWindowClass` window in both scenarios.
 
-Both architectures — **x86 (IA-32)** and **x64 (AMD64)** — are built from separate, hand-written assembly source trees. No cross-compilation, no `#ifdef` macros, no shared C code. Each target is native assembly tuned to its calling convention and register set.
+All three architectures — **x86 (IA-32)**, **x64 (AMD64)**, and **ARM64 (AArch64)** — are built from separate, hand-written assembly source trees. No cross-compilation, no `#ifdef` macros, no shared C code. Each target is native assembly tuned to its calling convention and register set.
 
 | Binary | Current release size | Enforced limit | Architecture |
 |---|---:|---:|---|
 | `cmdt_x64.exe` | **38.00 KiB (38,912 bytes)** | **<40 KiB** | x64 / AMD64 |
 | `cmdt_x86.exe` | **29.50 KiB (30,208 bytes)** | **<30 KiB** | x86 / IA-32 |
+| `cmdt_arm64.exe` | **TBD** | **TBD** | ARM64 / AArch64 |
 
-For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in well under 40 KB on x64 and 30 KB on x86. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
+For comparison, equivalent tools written in C++ or C# typically weigh in at 50–500 KB, pulling in the CRT, .NET runtime, or static libraries. CMDT achieves full feature parity — GUI with MRU history, shortcut resolution, drag-and-drop, DPI awareness, CLI with I/O redirection, Explorer context menu integration, Sticky Keys IFEO hook, Defender exclusion management, UAC self-elevation — in well under 40 KB on x64, 30 KB on x86, and TBD on ARM64. This is possible only because every byte is hand-placed assembly, every API call is direct, and there is zero abstraction overhead.
 
 ---
 
@@ -508,7 +509,7 @@ CMDT explicitly bypasses this restriction by calling `ChangeWindowMessageFilterE
 
 ### Prerequisites
 
-- **Microsoft Macro Assembler** — `ml.exe` (x86) and `ml64.exe` (x64) from Visual Studio Build Tools
+- **Microsoft Macro Assembler** — `ml.exe` (x86) and `ml64.exe` (x64) from Visual Studio Build Tools; `armasm64.exe` (ARM64) from the ARM64 C++ build tools component
 - **Windows SDK** — for `rc.exe` (resource compiler), import libraries, and headers
 - **PowerShell** — for the build script
 
@@ -553,10 +554,13 @@ cmdt/
 │   └── globals.inc               # External symbol declarations shared across modules
 ├── x86/                          # IA-32 assembly sources (parallel structure)
 │   └── …
+├── arm64/                        # AArch64 assembly sources (parallel structure)
+│   └── …
 ├── bin/                          # Compiled binaries (gitignored, rebuilt by build.ps1)
 ├── data/                         # Tracked release copies used for packaging (pack-data.sh)
 │   ├── cmdt_x64.exe
 │   ├── cmdt_x86.exe
+│   ├── cmdt_arm64.exe
 │   └── test.bat
 ├── cmdt.rc                       # Version info resource
 ├── cmdt.manifest                 # Application manifest (DPI, visual styles, execution level)
@@ -564,7 +568,7 @@ cmdt/
 └── README.md                     # This file (documentation)
 ```
 
-Every source file in `x64/` has a corresponding counterpart in `x86/`. The x86 versions use `.586` + `flat/stdcall` MASM syntax with `invoke` macros; the x64 versions use raw `proc frame` with explicit SEH prologue/epilogue annotations (`.pushreg`, `.allocstack`, `.setframe`, `.endprolog`). Both targets share the same `.rc` and `.manifest` files.
+Every source file in `x64/` has a corresponding counterpart in `x86/` and `arm64/`. The x86 versions use `.586` + `flat/stdcall` MASM syntax with `invoke` macros; the x64 versions use raw `proc frame` with explicit SEH prologue/epilogue annotations (`.pushreg`, `.allocstack`, `.setframe`, `.endprolog`); the ARM64 versions use A64 instruction syntax with `PROC`/`ENDP` and AArch64 calling-convention register assignments, assembled by `armasm64.exe`. All three targets share the same `.rc` and `.manifest` files.
 
 Both source trees were originally monolithic — a single ~90 KB `main.asm` on each side. A first pass split the dispatcher, help, relay, install, and string helpers into their own files. `window.asm` itself remained a second, GUI-specific tapeworm (the entire `WndProc`, DPI handling, dark-mode theming, MRU list, and command dispatch all in one file) until a second pass broke it into the six `window_*.inc` files listed above, `include`d back into `window.asm` at assembly time. They deliberately remain one MASM translation unit, preserving internal labels, stack-frame relationships, and call boundaries without adding runtime indirection. The linked binaries remain within the same size limits; the refactor does not claim byte-for-byte object identity because include ordering may change procedure layout. The split is identical on both architectures, so any reader who learns one tree can navigate the other without re-orientation.
 
@@ -626,6 +630,23 @@ CMDT requires Administrator privileges to run. It does not bypass UAC — the us
 ---
 
 ## Changelog
+
+<details open>
+<summary><strong>03.08.2026 — ARM64 (AArch64) support added</strong></summary>
+
+### New: ARM64 architecture (`cmdt_arm64.exe`)
+
+A third native assembly source tree, `arm64/`, mirrors the structure of `x64/` and `x86/`. All assembly is hand-written A64 (AArch64) code assembled by `armasm64.exe` from the Visual Studio ARM64 C++ build tools. The binary links against the same import libraries and the same `.rc`/`.manifest` files as the other two architectures — no CRT, no shared C code.
+
+The ARM64 build carries the same full feature set: GUI mode (Shift+Minimize tray, dark mode, Mica backdrop, PerMonitorV2 DPI-aware layout), CLI mode with temp-file I/O relay and separate stdout/stderr streams, Explorer context menu integration, Sticky Keys IFEO hook with Defender exclusion management via WMI, 34-entry privilege enablement table, 30-second token cache, `.lnk` resolution via `IShellLinkW`, drag-and-drop with UIPI bypass, and UAC self-elevation.
+
+`build.ps1` extended to locate `armasm64.exe` using the same vswhere-free directory scan approach as `Get-LatestVCToolsPath` — finds the first VS installation where `VC\Tools\MSVC\<version>\bin\Hostx64\ARM64\armasm64.exe` actually exists rather than depending on a component-id filter.
+
+`pack-data.sh`, `release-now.sh`, and `release-update.sh` updated to include `cmdt_arm64.exe` in the release archive and size reporting.
+
+**Release size:** `cmdt_arm64.exe` is TBD (enforced limit TBD).
+
+</details>
 
 <details open>
 <summary><strong>17.07.2026 — converted to console subsystem, system-aware dark mode, window.asm split into focused modules</strong></summary>
@@ -834,9 +855,10 @@ During early development, the minimal proof-of-concept builds were significantly
 | Hybrid GUI/CLI (no registry, no manifest) | **6 KB** | Added window creation, MRU, drag-and-drop |
 | Current full build (x86) | **<30 KB** | Hybrid mode, context menu, UAC self-elevation, manifest, COM `.lnk` resolution, system-aware dark mode |
 | Current full build (x64) | **<40 KB** | Same feature set, 64-bit calling convention overhead, DPI-aware layout |
+| Current full build (ARM64) | **TBD** | Same feature set, A64 instruction encoding, AArch64 calling convention |
 
-The growth from 4–6 KB to the current size (under 30 KB on x86, under 40 KB on x64) is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, the Sticky Keys IFEO hook with Defender exclusion management, UAC self-elevation, the wide-character string constants for registry paths and UI text, and the dark-mode implementation (cached brushes, control theming, and dynamically resolved `uxtheme.dll` ordinals). The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
+The growth from 4–6 KB to the current size (under 30 KB on x86, under 40 KB on x64, TBD on ARM64) is almost entirely due to the application manifest (DPI awareness, Common Controls v6, execution level declaration), the context menu registry logic, the Sticky Keys IFEO hook with Defender exclusion management, UAC self-elevation, the wide-character string constants for registry paths and UI text, and the dark-mode implementation (cached brushes, control theming, and dynamically resolved `uxtheme.dll` ordinals). The core token acquisition pipeline — the actual "engine" of CMDT — remains remarkably compact.
 
 ---
 
-*Written in 100% bare-metal x86/x64 MASM assembly. No frameworks. No runtimes. No compromises.*
+*Written in 100% bare-metal x86/x64/ARM64 assembly. No frameworks. No runtimes. No compromises.*

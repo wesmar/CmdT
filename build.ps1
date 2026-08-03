@@ -1,9 +1,23 @@
+param(
+    # Which architecture(s) to build. "all" builds every target; a single
+    # value (x86 | x64 | arm64) builds just that one. Handy on an ARM64 box
+    # where you only want the native arm64 target without the emulated
+    # x86/x64 passes.
+    [ValidateSet("all", "x86", "x64", "arm64")]
+    [string]$Arch = "all"
+)
+
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BinDir = Join-Path $ScriptDir "bin"
 
+$BuildX86   = $Arch -eq "all" -or $Arch -eq "x86"
+$BuildX64   = $Arch -eq "all" -or $Arch -eq "x64"
+$BuildARM64 = $Arch -eq "all" -or $Arch -eq "arm64"
+
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "Building CMDT - Run as TrustedInstaller" -ForegroundColor Cyan
+Write-Host "Target architecture(s): $Arch" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 
 function Get-LatestVCToolsPath {
@@ -70,6 +84,22 @@ $ML64    = "$VSBASE\x64\ml64.exe"
 $LINK32  = "$VSBASE\x86\link.exe"
 $LINK64  = "$VSBASE\x64\link.exe"
 
+# ARM64 toolchain (armasm64 + arm64 link) is taken from the SAME host folder
+# as the x86/x64 assemblers -- $VSBASE = ...\bin\Hostx64 -- on purpose, NOT the
+# machine-native Hostarm64 set. This is what makes the build deterministic
+# "here and there": the x64-hosted tools are one fixed set of binaries that
+# runs natively on an x64 box and under transparent x64 emulation on an ARM64
+# box. Same tool binary + same source + /Brepro => byte-identical output on
+# both machines, so hashes match cross-host. Picking Hostarm64 on ARM64 and
+# Hostx64 on x64 would be two different assembler binaries and could emit
+# different bytes for cmdt_arm64.exe even though nothing in the source changed.
+$ARMTOOLDIR = Join-Path $VSBASE "arm64"
+if ($BuildARM64 -and -not (Test-Path (Join-Path $ARMTOOLDIR "armasm64.exe"))) {
+    throw "Nie znaleziono armasm64.exe w $ARMTOOLDIR. Doinstaluj komponent 'MSVC ... ARM64/ARM64EC build tools' w Visual Studio Installer."
+}
+$ARMASM64  = "$ARMTOOLDIR\armasm64.exe"
+$LINKARM64 = "$ARMTOOLDIR\link.exe"
+
 $SDKVER        = Get-LatestWinSDK
 Write-Host ">>> Using VC Tools: $VSBASE" -ForegroundColor DarkGray
 Write-Host ">>> Using Windows SDK: $SDKVER" -ForegroundColor DarkGray
@@ -82,6 +112,8 @@ $LIBPATH32_UM  = "$SDKBASE\um\x86"
 $LIBPATH32_UCRT = "$SDKBASE\ucrt\x86"
 $LIBPATH64_UM  = "$SDKBASE\um\x64"
 $LIBPATH64_UCRT = "$SDKBASE\ucrt\x64"
+$LIBPATHARM64_UM   = "$SDKBASE\um\arm64"
+$LIBPATHARM64_UCRT = "$SDKBASE\ucrt\arm64"
 
 # rc.exe czasem siedzi tylko w folderze x86, niezaleznie od architektury builda
 $RC = "$SDKBIN\rc.exe"
@@ -97,9 +129,11 @@ if (-not (Test-Path $BinDir)) {
 
 $FILES_X86 = @("main", "token", "process", "window", "tray", "strutil", "help", "install", "relay", "cli")
 $FILES_X64 = @("main", "token", "process", "window", "tray", "strutil", "help", "install", "relay", "cli")
+$FILES_ARM64 = @("main", "token", "process", "window", "tray", "strutil", "help", "install", "relay", "cli")
 $LIBS = @("kernel32.lib", "user32.lib", "advapi32.lib", "shlwapi.lib", "shell32.lib", "gdi32.lib", "comdlg32.lib", "userenv.lib", "ole32.lib", "dwmapi.lib", "uxtheme.lib", "OleAut32.lib")
 $BuildSuccess = $true
 
+if ($BuildX86) {
 Write-Host ""
 Write-Host ">>> Architecture: x86" -ForegroundColor Cyan
 Push-Location $ScriptDir
@@ -142,7 +176,9 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 Pop-Location
+}
 
+if ($BuildX64) {
 Write-Host ""
 Write-Host ">>> Architecture: x64" -ForegroundColor Cyan
 Push-Location $ScriptDir
@@ -187,11 +223,63 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 Pop-Location
+}
+
+if ($BuildARM64) {
+Write-Host ""
+Write-Host ">>> Architecture: arm64" -ForegroundColor Cyan
+Write-Host ">>> Using ARM64 tools: $ARMTOOLDIR" -ForegroundColor DarkGray
+Push-Location $ScriptDir
+& $RC /c65001 /fo cmdt_arm64.res cmdt.rc
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Resource compilation failed" -ForegroundColor Red
+    $BuildSuccess = $false
+} else {
+    $arm64success = $true
+    foreach ($f in $FILES_ARM64) {
+        # armasm64: -I adds an include search path (window.asm pulls in the
+        # window_*.inc fragments); -g emits CodeView debug info.
+        & $ARMASM64 -machine ARM64 -g -I arm64 -o "arm64\$f.obj" "arm64\$f.asm"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Assembly of $f.asm failed" -ForegroundColor Red
+            $arm64success = $false
+            $BuildSuccess = $false
+            break
+        }
+    }
+    if ($arm64success) {
+        $linkArgs = @("arm64\main.obj", "arm64\token.obj", "arm64\process.obj", "arm64\window.obj", "arm64\tray.obj", "arm64\strutil.obj", "arm64\help.obj", "arm64\install.obj", "arm64\relay.obj", "arm64\cli.obj", "cmdt_arm64.res", "/machine:arm64", "/subsystem:console", "/entry:mainCRTStartup", "/Brepro", "/out:bin\cmdt_arm64.exe", "/MANIFEST:EMBED", "/MANIFESTINPUT:cmdt.manifest", "/LIBPATH:$LIBPATHARM64_UM", "/LIBPATH:$LIBPATHARM64_UCRT") + $LIBS
+        & $LINKARM64 $linkArgs
+        if ($LASTEXITCODE -ne 0) {
+            $BuildSuccess = $false
+        } else {
+            Write-Host "Build successful: bin\cmdt_arm64.exe" -ForegroundColor Green
+            Write-Host "Checking imports..." -ForegroundColor Cyan
+            $DUMPBINARM64 = "$ARMTOOLDIR\dumpbin.exe"
+            & $DUMPBINARM64 /imports "$BinDir\cmdt_arm64.exe" | Select-String "msvcr|vcruntime|ucrtbase" | ForEach-Object {
+                Write-Host "WARNING: CRT dependency found: $_" -ForegroundColor Yellow
+                $BuildSuccess = $false
+            }
+            if ($BuildSuccess) {
+                Write-Host "[PASS] No CRT imports detected" -ForegroundColor Green
+                # Set file timestamps to 2030-01-01 00:00:00
+                $targetFile = "$BinDir\cmdt_arm64.exe"
+                $futureDate = Get-Date "2030-01-01 00:00:00"
+                (Get-Item $targetFile).CreationTime = $futureDate
+                (Get-Item $targetFile).LastWriteTime = $futureDate
+                Write-Host "Timestamp set to 2030-01-01 00:00:00" -ForegroundColor Cyan
+            }
+        }
+    }
+}
+Pop-Location
+}
 
 Write-Host ""
 Write-Host "Cleaning up intermediate files..." -ForegroundColor Yellow
 Remove-Item "$ScriptDir\x86\*.obj" -ErrorAction SilentlyContinue
 Remove-Item "$ScriptDir\x64\*.obj" -ErrorAction SilentlyContinue
+Remove-Item "$ScriptDir\arm64\*.obj" -ErrorAction SilentlyContinue
 Remove-Item "$ScriptDir\*.obj" -ErrorAction SilentlyContinue
 Remove-Item "$ScriptDir\*.res" -ErrorAction SilentlyContinue
 

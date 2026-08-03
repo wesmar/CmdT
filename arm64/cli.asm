@@ -22,7 +22,7 @@
 ; ARM64 Port Notes:
 ;   - These labels share mainCRTStartup's stack frame (x29 = frame pointer).
 ;   - argv is passed in x20 (preserved from mainCRTStartup).
-;   - argc is stored at [x29, #-64] (set by mainCRTStartup).
+;   - argc is stored at [x29, #-240] (main stack base + 96).
 ;   - SECURITY_ATTRIBUTES block is at [x29, #-104].
 ;   - All exit paths terminate via ExitProcess; control never returns.
 ;
@@ -280,11 +280,11 @@ run_file_exec
 ;
 ; Entry state:
 ;   x20 = argv pointer
-;   [x29, #-64] = argc (32-bit value stored by mainCRTStartup)
+;   [x29, #-240] = argc (32-bit value stored by mainCRTStartup)
 ; ==============================================================================
 mode_cli_found
     ; CLI mode detected - check for minimum arguments (exe, -cli, command)
-    LDR w0, [x29, #-64]            ; w0 = argc
+    LDR w0, [x29, #-240]           ; w0 = argc (main sp+96)
     CMP w0, #3
     B.LT cli_no_cmd_free            ; Error: no command specified
 
@@ -297,7 +297,7 @@ mode_cli_found
     CBZ x0, cli_no_new_flag         ; Not "-new" (x0==0 mismatch)
 
     ; "-new" flag found: need at least 4 args (exe, -cli, -new, command)
-    LDR w0, [x29, #-64]
+    LDR w0, [x29, #-240]
     CMP w0, #4
     B.LT cli_no_cmd_free            ; Error: no command after -new
     ADRP x1, g_useNewConsole

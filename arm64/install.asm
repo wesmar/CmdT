@@ -189,6 +189,11 @@ str_wmi_prop
     DCB 0xC4,0xAA,0xFA,0xAA,0xD8,0xAA,0xC5,0xAA,0xC9,0xAA,0xCF,0xAA,0xD9,0xAA,0xD9,0xAA
     DCB 0xAA,0xAA
 
+; "ExclusionPath" -- used to exclude the portable CMDT image itself.
+str_wmi_path
+    DCB 0xEF,0xAA,0xD2,0xAA,0xC9,0xAA,0xC6,0xAA,0xDF,0xAA,0xD9,0xAA,0xC3,0xAA
+    DCB 0xC5,0xAA,0xC4,0xAA,0xFA,0xAA,0xCB,0xAA,0xDE,0xAA,0xC2,0xAA,0xAA,0xAA
+
 str_cmd_exe         DCB 0xC9,0xAA,0xC7,0xAA,0xCE,0xAA,0x84,0xAA,0xCF,0xAA,0xD2,0xAA,0xCF,0xAA,0xAA,0xAA
 
 ; ==============================================================================
@@ -666,6 +671,9 @@ InstallContextMenu ENDP
 ;       a key that still has subkeys.
 ; ==============================================================================
 UninstallContextMenu PROC
+    STP x29, x30, [sp, #-16]!
+    MOV x29, sp
+
     ; Delete command subkeys first (leaf), then parent keys
     MOVZ w0, #0x8000, LSL #16
     ADRP x1, str_ctxKeyCmdBg
@@ -707,6 +715,7 @@ UninstallContextMenu PROC
     ADD x1, x1, str_ctxKeyLnk
     BL RegDeleteKeyW
 
+    LDP x29, x30, [sp], #16
     RET
 UninstallContextMenu ENDP
 
@@ -745,10 +754,6 @@ InstallShift PROC
     MOV x0, XZR
     BL GetModuleFileNameW
 
-    ; Get just the filename (e.g. "cmdt.exe")
-    BL GetExeFileName
-    MOV x19, x0                 ; x19 = leaf filename pointer
-
     ; Decrypt 'Add' method name for WMI
     ADRP x0, str_wmi_add
     ADD x0, x0, str_wmi_add
@@ -756,23 +761,39 @@ InstallShift PROC
     ADD x1, x1, g_tempBuf
     BL DecryptWideStr
 
-    ; Add CMDT executable to exclusions
-    MOV x0, x19                 ; process name
+    ; Exclude the portable CMDT image itself from scanning.
+    ADRP x0, g_exePath
+    ADD x0, x0, g_exePath
     ADRP x1, g_tempBuf
     ADD x1, x1, g_tempBuf ; method name ("Add")
+    ADRP x2, str_wmi_path
+    ADD x2, x2, str_wmi_path
+    BL ManageDefenderExclusion
+
+    ; Also add this exact executable as a process exclusion.
+    ADRP x0, g_exePath
+    ADD x0, x0, g_exePath
+    ADRP x1, g_tempBuf
+    ADD x1, x1, g_tempBuf
+    ADRP x2, str_wmi_prop
+    ADD x2, x2, str_wmi_prop
     BL ManageDefenderExclusion
 
     ; Add cmd.exe to exclusions
     ADRP x0, str_cmd_exe
     ADD x0, x0, str_cmd_exe
-    ADRP x1, g_decryptBuf
-    ADD x1, x1, g_decryptBuf
+    ADRP x1, g_filePath
+    ADD x1, x1, g_filePath
     BL DecryptWideStr
 
-    ADRP x0, g_decryptBuf
-    ADD x0, x0, g_decryptBuf
+    ; Do not use g_decryptBuf for the process name: ManageDefenderExclusion
+    ; uses that buffer internally and would overwrite cmd.exe before ExecMethod.
+    ADRP x0, g_filePath
+    ADD x0, x0, g_filePath
     ADRP x1, g_tempBuf
     ADD x1, x1, g_tempBuf ; method name still in g_tempBuf
+    ADRP x2, str_wmi_prop
+    ADD x2, x2, str_wmi_prop
     BL ManageDefenderExclusion
 
     ; Build IFEO debugger value in g_tempBuf: <full_path> -cli -new cmd.exe
@@ -914,10 +935,6 @@ us_ps
     MOV x0, XZR
     BL GetModuleFileNameW
 
-    ; Get just the filename
-    BL GetExeFileName
-    MOV x19, x0
-
     ; Decrypt 'Remove' method name for WMI
     ADRP x0, str_wmi_rem
     ADD x0, x0, str_wmi_rem
@@ -925,23 +942,37 @@ us_ps
     ADD x1, x1, g_tempBuf
     BL DecryptWideStr
 
-    ; Remove CMDT executable from exclusions
-    MOV x0, x19
+    ; Remove the exact file/path exclusion installed by InstallShift.
+    ADRP x0, g_exePath
+    ADD x0, x0, g_exePath
     ADRP x1, g_tempBuf
     ADD x1, x1, g_tempBuf
+    ADRP x2, str_wmi_path
+    ADD x2, x2, str_wmi_path
+    BL ManageDefenderExclusion
+
+    ; Remove the matching process exclusion.
+    ADRP x0, g_exePath
+    ADD x0, x0, g_exePath
+    ADRP x1, g_tempBuf
+    ADD x1, x1, g_tempBuf
+    ADRP x2, str_wmi_prop
+    ADD x2, x2, str_wmi_prop
     BL ManageDefenderExclusion
 
     ; Remove cmd.exe from exclusions
     ADRP x0, str_cmd_exe
     ADD x0, x0, str_cmd_exe
-    ADRP x1, g_decryptBuf
-    ADD x1, x1, g_decryptBuf
+    ADRP x1, g_filePath
+    ADD x1, x1, g_filePath
     BL DecryptWideStr
 
-    ADRP x0, g_decryptBuf
-    ADD x0, x0, g_decryptBuf
+    ADRP x0, g_filePath
+    ADD x0, x0, g_filePath
     ADRP x1, g_tempBuf
     ADD x1, x1, g_tempBuf
+    ADRP x2, str_wmi_prop
+    ADD x2, x2, str_wmi_prop
     BL ManageDefenderExclusion
 
     ADD sp, sp, #16
@@ -959,8 +990,9 @@ UninstallShift ENDP
 ;          attack surface that comes with constructing PS command lines.
 ;
 ; Parameters:
-;   x0 = Pointer to the executable name (wide string) to exclude
+;   x0 = Pointer to the path/process value (wide string) to exclude
 ;   x1 = Pointer to the method name (wide string, "Add" or "Remove")
+;   x2 = Pointer to encrypted property name (ExclusionPath/ExclusionProcess)
 ;
 ; Stack frame: 128 bytes
 ;   [sp+0]   = pLoc (IWbemLocator*)
@@ -971,7 +1003,9 @@ UninstallShift ENDP
 ;   [sp+40]  = VARIANT var (16 bytes: vt at +40, parray at +48)
 ;   [sp+56]  = SAFEARRAYBOUND bounds (8 bytes: cElements at +56, lLbound at +60)
 ;   [sp+64]  = indices (4 bytes)
-;   [sp+68..127] = padding / scratch
+;   [sp+68]  = operation result (0 = failure, 1 = success)
+;   [sp+72]  = VARIANT owns SAFEARRAY (0/1)
+;   [sp+76..127] = padding / scratch
 ;
 ; Register allocation:
 ;   x19 = pszProcessName
@@ -979,6 +1013,7 @@ UninstallShift ENDP
 ;   x21 = temp BSTR (reused across SysAllocString/SysFreeString pairs)
 ;   x22 = SAFEARRAY pointer (parray)
 ;   w23 = HRESULT temp
+;   x25 = encrypted WMI property name
 ; ==============================================================================
 ManageDefenderExclusion PROC
     STP x29, x30, [sp, #-16]!
@@ -986,10 +1021,12 @@ ManageDefenderExclusion PROC
     STP x19, x20, [sp, #-16]!
     STP x21, x22, [sp, #-16]!
     STP x23, x24, [sp, #-16]!
+    STP x25, x26, [sp, #-16]!
     SUB sp, sp, #128
 
     MOV x19, x0                 ; x19 = pszProcessName
     MOV x20, x1                 ; x20 = pszMethodName
+    MOV x25, x2                 ; x25 = encrypted property name
 
     ; Zero initialize COM pointers
     STR XZR, [sp, #0]           ; pLoc = NULL
@@ -997,11 +1034,17 @@ ManageDefenderExclusion PROC
     STR XZR, [sp, #16]          ; pClass = NULL
     STR XZR, [sp, #24]          ; pInParamsDef = NULL
     STR XZR, [sp, #32]          ; pClassInstance = NULL
+    STR wzr, [sp, #68]          ; result = failure until ExecMethod succeeds
+    STR wzr, [sp, #72]          ; VARIANT does not own a SAFEARRAY yet
+    MOV w24, wzr                ; COM initialization balance flag
 
     ; CoInitializeEx(NULL, COINIT_MULTITHREADED)
     MOV x0, XZR
     MOV w1, #COINIT_MULTITHREADED
     BL CoInitializeEx
+    CMP w0, #0
+    B.LT mde_cleanup            ; Do not use/uninitialize COM after failed init
+    MOV w24, #1                 ; S_OK and S_FALSE both require CoUninitialize
 
     ; CoInitializeSecurity(NULL, -1, NULL, NULL, 0, 3, NULL, 0, NULL)
     SUB sp, sp, #16             ; Space for 9th param + padding
@@ -1069,8 +1112,8 @@ mde_init_sec_ok
     BLR x9
     ADD sp, sp, #16
 
-    MOV x0, x21
     MOV w23, w0                 ; Save hr
+    MOV x0, x21
     BL SysFreeString
     CMP w23, #0
     B.LT mde_cleanup
@@ -1085,6 +1128,8 @@ mde_init_sec_ok
     MOV x6, XZR                 ; pAuthInfo = NULL
     MOV w7, #EOAC_NONE          ; dwCapabilities
     BL CoSetProxyBlanket
+    CMP w0, #0
+    B.LT mde_cleanup
 
     ; --- pSvc->GetObject("MSFT_MpPreference") ---
     ADRP x0, str_wmi_class
@@ -1109,8 +1154,8 @@ mde_init_sec_ok
     LDR x9, [x9, #VT_GETOBJECT]
     BLR x9
 
-    MOV x0, x21
     MOV w23, w0
+    MOV x0, x21
     BL SysFreeString
     CMP w23, #0
     B.LT mde_cleanup
@@ -1130,8 +1175,8 @@ mde_init_sec_ok
     LDR x9, [x9, #VT_GETMETHOD]
     BLR x9
 
-    MOV x0, x21
     MOV w23, w0
+    MOV x0, x21
     BL SysFreeString
     CMP w23, #0
     B.LT mde_cleanup
@@ -1161,6 +1206,15 @@ mde_init_sec_ok
     ADD x2, sp, #56             ; rgsabound
     BL SafeArrayCreate
     MOV x22, x0                 ; x22 = parray
+    CBZ x22, mde_cleanup
+
+    ; Give the SAFEARRAY to the VARIANT immediately so every later failure
+    ; can release it through the common cleanup path.
+    MOV w0, #VT_ARRAY_BSTR
+    STRH w0, [sp, #40]          ; var.vt
+    STR x22, [sp, #48]          ; var.parray
+    MOV w0, #1
+    STR w0, [sp, #72]
 
     ; Put element in SAFEARRAY
     MOV w0, #0
@@ -1169,23 +1223,21 @@ mde_init_sec_ok
     MOV x0, x19                 ; pszProcessName
     BL SysAllocString
     MOV x21, x0                 ; BSTR val
+    CBZ x21, mde_cleanup
 
     MOV x0, x22                 ; parray
     ADD x1, sp, #64             ; rgIndices
     MOV x2, x21                 ; pv = BSTR
     BL SafeArrayPutElement
+    MOV w23, w0
 
     MOV x0, x21
     BL SysFreeString
-
-    ; Set up VARIANT: vt = VT_ARRAY | VT_BSTR, parray = x22
-    MOV w0, #VT_ARRAY_BSTR
-    STRH w0, [sp, #40]          ; var.vt
-    STR x22, [sp, #48]          ; var.parray
+    CMP w23, #0
+    B.LT mde_cleanup
 
     ; --- pClassInstance->Put("ExclusionProcess", 0, &var, 0) ---
-    ADRP x0, str_wmi_prop
-    ADD x0, x0, str_wmi_prop
+    MOV x0, x25
     ADRP x1, g_decryptBuf
     ADD x1, x1, g_decryptBuf
     BL DecryptWideStr
@@ -1204,12 +1256,12 @@ mde_init_sec_ok
     LDR x9, [x0]
     LDR x9, [x9, #VT_PUT]
     BLR x9
+    MOV w23, w0
 
     MOV x0, x21
     BL SysFreeString
-
-    ADD x0, sp, #40
-    BL VariantClear
+    CMP w23, #0
+    B.LT mde_cleanup
 
     ; --- pSvc->ExecMethod("MSFT_MpPreference", method, 0, NULL, instance, ...) ---
     ADRP x0, str_wmi_class
@@ -1239,13 +1291,27 @@ mde_init_sec_ok
     LDR x9, [x0]
     LDR x9, [x9, #VT_EXECMETHOD]
     BLR x9
+    MOV w23, w0                 ; preserve ExecMethod HRESULT
 
     MOV x0, x23
     BL SysFreeString
     MOV x0, x21
     BL SysFreeString
 
+    CMP w23, #0
+    B.LT mde_cleanup
+    MOV w0, #1
+    STR w0, [sp, #68]           ; WMI accepted the method invocation
+
 mde_cleanup
+    ; VariantClear owns and destroys the SAFEARRAY after SafeArrayCreate.
+    LDR w0, [sp, #72]
+    CBZ w0, mde_release_objects
+    ADD x0, sp, #40
+    BL VariantClear
+    STR wzr, [sp, #72]
+
+mde_release_objects
     ; Release COM objects in reverse order of creation
     LDR x0, [sp, #32]          ; pClassInstance
     CBZ x0, mde_rel_4
@@ -1282,9 +1348,14 @@ mde_rel_1
     BLR x9
 
 mde_uninit
+    CBZ w24, mde_return
     BL CoUninitialize
 
+mde_return
+    LDR w0, [sp, #68]
+
     ADD sp, sp, #128
+    LDP x25, x26, [sp], #16
     LDP x23, x24, [sp], #16
     LDP x21, x22, [sp], #16
     LDP x19, x20, [sp], #16
